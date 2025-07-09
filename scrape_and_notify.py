@@ -110,4 +110,47 @@ def parse_articles(html: str) -> list[dict]:
             "parsed_date": parsed,
         })
     return articles
+import os
+from datetime import date
+import telegram  # make sure python-telegram-bot is installed
+
+def format_message(articles: list[dict]) -> str:
+    """
+    Builds a Markdown-formatted message listing today's articles.
+    """
+    today = date.today().isoformat()
+    if not articles:
+        return f"No new articles for {today}."
+    
+    lines = [f"*📈 Moroccan Finance News – {today}*",""]
+    for a in articles:
+        # Each line: - [Headline](URL) (YYYY-MM-DD)
+        lines.append(f"- [{a['headline']}]({a['link']}) ({a['parsed_date']})")
+    return "\n".join(lines)
+
+def send_telegram(message: str) -> None:
+    """
+    Sends the given message to the Telegram chat.
+    """
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    bot = telegram.Bot(token=token)
+    bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+
+def main():
+    URL = "https://boursenews.ma/articles/marches"
+    html = fetch_url(URL)
+    articles = parse_articles(html)
+    
+    # Filter only today's articles
+    today_str = date.today().isoformat()
+    todays = [a for a in articles if a["parsed_date"] == today_str]
+    
+    message = format_message(todays)
+    send_telegram(message)
+
+if __name__ == "__main__":
+    main()
+
+
 
