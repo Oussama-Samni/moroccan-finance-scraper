@@ -163,3 +163,7 @@ def main():
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
+
+if __name__ == "__main__":
+    main()
+
