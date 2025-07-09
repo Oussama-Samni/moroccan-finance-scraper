@@ -170,8 +170,10 @@ def main():
     html = fetch_url(URL)
     articles = parse_articles(html)
 
+    print(f"DEBUG: Parsed {len(articles)} total articles")             # ← add this
     today_str = date.today().isoformat()
     todays = [a for a in articles if a["parsed_date"] == today_str]
+    print(f"DEBUG: Found {len(todays)} articles for {today_str}")     # ← and this
 
     if not todays:
         send_telegram(f"No new articles for {today_str}.")
