@@ -156,8 +156,10 @@ def main():
         send_telegram(f"No new articles for {today_str}.")
         return
 
-    for article in todays:
-        send_article(article)
-
-if __name__ == "__main__":
-    main()
+    for idx, article in enumerate(todays, 1):
+        print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
+        try:
+            send_article(article)
+            print(f"DEBUG: Sent article {idx}/{len(todays)}")
+        except Exception as e:
+            print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
