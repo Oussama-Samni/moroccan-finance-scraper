@@ -102,18 +102,24 @@ def send_telegram(message: str) -> None:
 
 def send_article(article: dict) -> None:
     """
-    Sends one article to Telegram as a photo message with caption, using HTML parse mode.
+    Sends one article to Telegram as a photo message with caption,
+    encoding the image URL to avoid HTTP errors.
     """
+    import urllib.parse
+
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
 
-    # Build caption in HTML
-    # Wrap headline in <b>…</b> and the link in <a href="…">Read more</a>
-    headline = article['headline'].replace('<', '&lt;').replace('>', '&gt;')
-    description = article['description'].replace('<', '&lt;').replace('>', '&gt;')
-    link = article['link']
-    date_str = article['parsed_date']
+    # Encode URL to handle spaces and special characters
+    raw_url = article["image_url"]
+    photo_url = urllib.parse.quote(raw_url, safe=":/?&=#")
+
+    # Escape HTML special chars in text
+    headline = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
+    description = article["description"].replace("<", "&lt;").replace(">", "&gt;")
+    link = article["link"]
+    date_str = article["parsed_date"]
 
     caption = (
         f"<b>{headline}</b>\n"
@@ -123,21 +129,21 @@ def send_article(article: dict) -> None:
 
     payload = {
         "chat_id": chat_id,
-        "photo": article["image_url"],
+        "photo": photo_url,
         "caption": caption,
         "parse_mode": "HTML"
     }
 
-    # Optional debugging
-    print(f"DEBUG: Sending to {chat_id}, photo={article['image_url']}")
+    print(f"DEBUG: Sending to {chat_id}, photo={photo_url}")
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        r.raise_for_status()
+        resp = requests.post(api_url, json=payload, timeout=10)
+        resp.raise_for_status()
         print("DEBUG: sendPhoto OK")
     except Exception as e:
         print(f"ERROR sending article '{headline}': {e}")
-        if 'r' in locals():
-            print("API response:", r.status_code, r.text)
+        if 'resp' in locals():
+            print("API response:", resp.status_code, resp.text)
+
 
 
 # ===== Main workflow =====
