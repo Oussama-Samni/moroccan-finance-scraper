@@ -128,14 +128,22 @@ def format_message(articles: list[dict]) -> str:
         lines.append(f"- [{a['headline']}]({a['link']}) ({a['parsed_date']})")
     return "\n".join(lines)
 
+import requests
+
 def send_telegram(message: str) -> None:
     """
-    Sends the given message to the Telegram chat.
+    Sends the given message to the Telegram chat via HTTP API.
     """
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    bot = telegram.Bot(token=token)
-    bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    resp = requests.post(url, json=payload, timeout=10)
+    resp.raise_for_status()
 
 def main():
     URL = "https://boursenews.ma/articles/marches"
