@@ -101,22 +101,44 @@ def send_telegram(message: str) -> None:
     r.raise_for_status()
 
 def send_article(article: dict) -> None:
+    """
+    Sends one article to Telegram as a photo message with caption, using HTML parse mode.
+    """
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
+
+    # Build caption in HTML
+    # Wrap headline in <b>…</b> and the link in <a href="…">Read more</a>
+    headline = article['headline'].replace('<', '&lt;').replace('>', '&gt;')
+    description = article['description'].replace('<', '&lt;').replace('>', '&gt;')
+    link = article['link']
+    date_str = article['parsed_date']
+
     caption = (
-        f"*{article['headline']}*\n"
-        f"{article['description']}\n\n"
-        f"[Read more]({article['link']}) • {article['parsed_date']}"
+        f"<b>{headline}</b>\n"
+        f"{description}\n\n"
+        f'<a href="{link}">Read more</a> • {date_str}'
     )
+
     payload = {
         "chat_id": chat_id,
         "photo": article["image_url"],
         "caption": caption,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
-    r = requests.post(url, json=payload, timeout=10)
-    r.raise_for_status()
+
+    # Optional debugging
+    print(f"DEBUG: Sending to {chat_id}, photo={article['image_url']}")
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        r.raise_for_status()
+        print("DEBUG: sendPhoto OK")
+    except Exception as e:
+        print(f"ERROR sending article '{headline}': {e}")
+        if 'r' in locals():
+            print("API response:", r.status_code, r.text)
+
 
 # ===== Main workflow =====
 
