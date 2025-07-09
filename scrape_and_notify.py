@@ -144,21 +144,41 @@ def send_telegram(message: str) -> None:
     }
     resp = requests.post(url, json=payload, timeout=10)
     resp.raise_for_status()
+def send_article(article: dict) -> None:
+    """
+    Sends one article to Telegram as a photo message with caption.
+    """
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    caption = (
+        f"*{article['headline']}*\n"
+        f"{article['description']}\n\n"
+        f"[Read more]({article['link']}) • {article['parsed_date']}"
+    )
+    payload = {
+        "chat_id": chat_id,
+        "photo": article["image_url"],
+        "caption": caption,
+        "parse_mode": "Markdown"
+    }
+    resp = requests.post(url, json=payload, timeout=10)
+    resp.raise_for_status()
 
 def main():
     URL = "https://boursenews.ma/articles/marches"
     html = fetch_url(URL)
     articles = parse_articles(html)
-    
-    # Filter only today's articles
+
     today_str = date.today().isoformat()
     todays = [a for a in articles if a["parsed_date"] == today_str]
-    
-    message = format_message(todays)
-    send_telegram(message)
 
-if __name__ == "__main__":
-    main()
+    if not todays:
+        send_telegram(f"No new articles for {today_str}.")
+        return
+
+    for article in todays:
+        send_article(article)
 
 
 
