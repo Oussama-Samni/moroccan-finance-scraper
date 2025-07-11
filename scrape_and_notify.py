@@ -230,6 +230,7 @@ def main():
     all_today = [a for a in articles if a["parsed_date"] == today_str]
 
     sent_urls = load_sent()
+    print(f"DEBUG: Loaded {len(sent_urls)} sent URLs from cache")
     # Keep only those we haven’t sent yet:
     todays = [a for a in all_today if a["link"] not in sent_urls]
 
