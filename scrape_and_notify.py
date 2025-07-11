@@ -203,6 +203,20 @@ def send_article(article: dict) -> None:
         if 'resp' in locals():
             print("API response:", resp.status_code, resp.text)
 
+def send_alert(message: str) -> None:
+    """
+    Sends an alert message to your personal Telegram chat.
+    """
+    token = os.getenv("TELEGRAM_TOKEN")
+    alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": alert_chat,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    resp = requests.post(url, json=payload, timeout=10)
+    resp.raise_for_status()
 
 
 # ===== Main workflow =====
