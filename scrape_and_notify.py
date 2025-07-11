@@ -246,7 +246,7 @@ def main():
         try:
             send_article(article)
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
-            time.sleep(2) # 0.5 minutes delay between article sends.
+            time.sleep(10) # 0.5 minutes delay between article sends.
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
 
