@@ -167,23 +167,29 @@ def send_telegram(message: str) -> None:
 def send_article(article: dict) -> None:
     """
     Sends one article to Telegram as a photo message with caption,
-    or falls back to text-only if the image URL is invalid.
+    omitting the description if it’s empty, or falls back to text-only if the image URL is invalid.
     """
     import urllib.parse
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    # Prepare caption with proper spacing
+    # Prepare fields
     headline    = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
-    description = article["description"].replace("<", "&lt;").replace(">", "&gt;")
+    description = article["description"].strip().replace("<", "&lt;").replace(">", "&gt;")
     link        = article["link"]
-    caption = (
-        f"<b>{headline}</b>\n\n"
-        f"{description}\n\n"
-        f'<a href="{link}">Lire l’article complet</a>\n\n'
-        f"@MorrocanFinancialNews"
-    )
+
+    # Build caption dynamically
+    parts = [f"<b>{headline}</b>"]
+    if description:
+        parts.extend(["", description])
+    parts.extend([
+        "",
+        f'<a href="{link}">Lire l’article complet</a>',
+        "",
+        "@MorrocanFinancialNews"
+    ])
+    caption = "\n".join(parts)
 
     # Pre-flight HEAD request to check image
     original_url = article["image_url"]
@@ -211,6 +217,7 @@ def send_article(article: dict) -> None:
     # Fallback: send text-only message
     print("DEBUG: Sending text-only fallback")
     send_telegram(caption)
+
 
 
 def send_alert(message: str) -> None:
