@@ -85,7 +85,7 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
                 f"⚠️ Fetch failed {failures} times in a row for {url}. "
                 "Please check connectivity or site availability."
             )
-            send_telegram(alert_msg)
+            send_alert(alert_msg)
             save_fetch_failures(0)
         # Re-raise to halt this run
         raise
