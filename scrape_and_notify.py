@@ -180,10 +180,11 @@ def send_article(article: dict) -> None:
     date_str = article["parsed_date"]
 
     caption = (
-        f"<b>{headline}</b>\n"
-        f"{description}\n\n"
-        f'<a href="{link}">Read more</a> • {date_str}'
-    )
+    f"<b>{headline}</b>\n\n"               # Title, blank line
+    f"{description}\n\n"                  # Description, blank line
+    f'<a href="{link}">Lire l’article complet</a>\n\n'  # Link, blank line
+    f"@MorrocanFinancialNews"              # Channel handle
+)
 
     payload = {
         "chat_id": chat_id,
