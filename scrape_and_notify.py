@@ -251,6 +251,8 @@ def main():
     # After sending all new articles, update sent list
     sent_urls.update(a["link"] for a in todays)
     save_sent(sent_urls)
+    print(f"DEBUG: saved {len(sent_urls)} URLs to sent_articles.json")
+
 
 
 if __name__ == "__main__":
