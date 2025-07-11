@@ -1,4 +1,5 @@
 import os
+import time
 import re
 import requests
 import json
@@ -189,6 +190,7 @@ def main():
         try:
             send_article(article)
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
+            time.sleep(120) # 2 minutes delay between article sends.
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
 
