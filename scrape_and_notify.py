@@ -161,47 +161,51 @@ def send_telegram(message: str) -> None:
 def send_article(article: dict) -> None:
     """
     Sends one article to Telegram as a photo message with caption,
-    encoding the image URL to avoid HTTP errors.
+    or falls back to text-only if the image URL is invalid.
     """
     import urllib.parse
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
 
-    # Encode URL to handle spaces and special characters
-    raw_url = article["image_url"]
-    photo_url = urllib.parse.quote(raw_url, safe=":/?&=#")
-
-    # Escape HTML special chars in text
-    headline = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
+    # Prepare caption with proper spacing
+    headline    = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
     description = article["description"].replace("<", "&lt;").replace(">", "&gt;")
-    link = article["link"]
-    date_str = article["parsed_date"]
-
+    link        = article["link"]
     caption = (
-    f"<b>{headline}</b>\n\n"               # Title, blank line
-    f"{description}\n\n"                  # Description, blank line
-    f'<a href="{link}">Lire l’article complet</a>\n\n'  # Link, blank line
-    f"@MorrocanFinancialNews"              # Channel handle
-)
+        f"<b>{headline}</b>\n\n"
+        f"{description}\n\n"
+        f'<a href="{link}">Lire l’article complet</a>\n\n'
+        f"@MorrocanFinancialNews"
+    )
 
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "HTML"
-    }
-
-    print(f"DEBUG: Sending to {chat_id}, photo={photo_url}")
+    # Pre-flight HEAD request to check image
+    original_url = article["image_url"]
     try:
-        resp = requests.post(api_url, json=payload, timeout=10)
-        resp.raise_for_status()
-        print("DEBUG: sendPhoto OK")
+        head_resp = requests.head(original_url, timeout=5)
+        content_type = head_resp.headers.get("Content-Type", "")
+        if head_resp.status_code == 200 and content_type.startswith("image/"):
+            # Encode URL to handle spaces and special characters
+            photo_url = urllib.parse.quote(original_url, safe=":/?&=#")
+            api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
+            payload = {
+                "chat_id": chat_id,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML"
+            }
+            print(f"DEBUG: Sending photo to {chat_id}, photo={photo_url}")
+            resp = requests.post(api_url, json=payload, timeout=10)
+            resp.raise_for_status()
+            print("DEBUG: sendPhoto OK")
+            return
     except Exception as e:
-        print(f"ERROR sending article '{headline}': {e}")
-        if 'resp' in locals():
-            print("API response:", resp.status_code, resp.text)
+        print(f"DEBUG: Image HEAD check failed, falling back to text: {e}")
+
+    # Fallback: send text-only message
+    print("DEBUG: Sending text-only fallback")
+    send_telegram(caption)
+
 
 def send_alert(message: str) -> None:
     """
