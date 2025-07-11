@@ -221,7 +221,7 @@ def send_alert(message: str) -> None:
 # ===== Main workflow =====
 
 def main():
-    URL = "https://invalid.boursenews.ma"
+    URL = "https://boursenews.ma/articles/marches"
     html = fetch_url(URL)
     articles = parse_articles(html)
 
