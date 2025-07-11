@@ -134,6 +134,10 @@ def parse_articles(html: str) -> list[dict]:
         image_url = urljoin(BASE_URL, image_raw)
         parsed    = parse_date(date_text)
 
+        # Skip articles with no headline or invalid link
+        if not headline or not link.startswith("http"):
+            continue
+
         articles.append({
             "headline":    headline,
             "description": description,
@@ -142,7 +146,9 @@ def parse_articles(html: str) -> list[dict]:
             "date":        date_text,
             "parsed_date": parsed,
         })
+
     return articles
+
 
 # ===== Telegram sending =====
 
