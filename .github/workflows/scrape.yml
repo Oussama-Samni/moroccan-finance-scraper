@@ -3,19 +3,18 @@ name: Scrape Moroccan Finance News
 on:
   schedule:
     - cron: '0 * * * *'    # At minute 0 of every hour
-  workflow_dispatch:    # allows manual trigger
+  workflow_dispatch:      # allows manual trigger
 
 jobs:
   scrape-and-notify:
     runs-on: ubuntu-latest
 
     steps:
-         - name: Check out repository
-     uses: actions/checkout@v3
-     with:
-       fetch-depth: 0           # fetch full history so we can commit
-       persist-credentials: true  # enable pushing back via GITHUB_TOKEN
-
+      - name: Check out repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0             # fetch full history so we can commit
+          persist-credentials: true  # enable pushing back via GITHUB_TOKEN
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -41,4 +40,3 @@ jobs:
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
