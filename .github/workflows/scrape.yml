@@ -10,8 +10,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v3
+         - name: Check out repository
+     uses: actions/checkout@v3
+     with:
+       fetch-depth: 0           # fetch full history so we can commit
+       persist-credentials: true  # enable pushing back via GITHUB_TOKEN
+
 
       - name: Set up Python
         uses: actions/setup-python@v4
