@@ -158,9 +158,7 @@ def main():
     todays = [a for a in articles if a["parsed_date"] == today_str]
     print(f"DEBUG: Found {len(todays)} articles for {today_str}")
 
-    if not todays:
-        send_telegram(f"No new articles for {today_str}.")
-        return
+    
 
     for idx, article in enumerate(todays, 1):
         print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
