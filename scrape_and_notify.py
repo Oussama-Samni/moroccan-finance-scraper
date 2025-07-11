@@ -1,11 +1,28 @@
 import os
 import re
 import requests
+import json
+
+SENT_FILE = "sent_articles.json"
+
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from datetime import datetime, date
 from urllib.parse import urljoin
+
+def load_sent() -> set:
+    """Load the set of URLs already sent, or return empty."""
+    try:
+        with open(SENT_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_sent(urls: set) -> None:
+    """Save the updated set of sent URLs back to the JSON file."""
+    with open(SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(urls), f, ensure_ascii=False, indent=2)
 
 # ===== HTTP fetching with retries =====
 
@@ -155,10 +172,17 @@ def main():
 
     print(f"DEBUG: Parsed {len(articles)} total articles")
     today_str = date.today().isoformat()
-    todays = [a for a in articles if a["parsed_date"] == today_str]
-    print(f"DEBUG: Found {len(todays)} articles for {today_str}")
+    all_today = [a for a in articles if a["parsed_date"] == today_str]
 
-    
+    sent_urls = load_sent()
+    # Keep only those we haven’t sent yet:
+    todays = [a for a in all_today if a["link"] not in sent_urls]
+
+    # If nothing new to send, exit quietly
+    if not todays:
+        return
+
+    print(f"DEBUG: Found {len(todays)} articles for {today_str}")
 
     for idx, article in enumerate(todays, 1):
         print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
@@ -167,6 +191,11 @@ def main():
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
+
+    # After sending all new articles, update sent list
+    sent_urls.update(a["link"] for a in todays)
+    save_sent(sent_urls)
+
 
 if __name__ == "__main__":
     main()
