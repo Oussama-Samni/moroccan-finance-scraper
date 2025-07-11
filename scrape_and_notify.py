@@ -5,7 +5,23 @@ import requests
 import json
 
 SENT_FILE = "sent_articles.json"
+FETCH_FAILURES_FILE = "fetch_failures.json"
+FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
 
+def load_fetch_failures() -> int:
+    """Load current consecutive fetch failure count."""
+    try:
+        with open(FETCH_FAILURES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return int(data.get("count", 0))
+    except FileNotFoundError:
+        return 0
+
+def save_fetch_failures(count: int) -> None:
+    """Save updated fetch failure count."""
+    with open(FETCH_FAILURES_FILE, "w", encoding="utf-8") as f:
+        json.dump({"count": count}, f)
+        
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
@@ -49,10 +65,35 @@ def get_session(
     return session
 
 def fetch_url(url: str, timeout: float = 10.0) -> str:
-    session = get_session()
-    resp = session.get(url, timeout=timeout)
-    resp.raise_for_status()
+    """
+    Fetches the given URL with retry logic. Tracks consecutive failures
+    and sends an alert if threshold is exceeded.
+    """
+    try:
+        session = get_session()
+        resp = session.get(url, timeout=timeout)
+        resp.raise_for_status()
+    except Exception as e:
+        # Increment failure count
+        failures = load_fetch_failures() + 1
+        save_fetch_failures(failures)
+        print(f"ERROR: Fetch attempt failed ({failures}): {e}")
+
+        # If threshold reached, send alert and reset counter
+        if failures >= FETCH_FAILURE_THRESHOLD:
+            alert_msg = (
+                f"⚠️ Fetch failed {failures} times in a row for {url}. "
+                "Please check connectivity or site availability."
+            )
+            send_telegram(alert_msg)
+            save_fetch_failures(0)
+        # Re-raise to halt this run
+        raise
+
+    # On success, reset failure counter
+    save_fetch_failures(0)
     return resp.text
+
 
 # ===== Parsing HTML and dates =====
 
