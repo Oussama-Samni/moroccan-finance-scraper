@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 * * * *'    # At minute 0 of every hour
+    - cron: '0 */2 * * *'  # At minute 0 every 2 hours
   workflow_dispatch:      # allows manual trigger
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
           path: |
             sent_articles.json
             fetch_failures.json
-          key: state-files-${{ runner.os }}-global
+          key: state-files-${{ runner.os }}-$(date -u +%F)
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -48,5 +48,4 @@ jobs:
           path: |
             sent_articles.json
             fetch_failures.json
-          key: state-files-${{ runner.os }}-global
-
+          key: state-files-${{ runner.os }}-$(date -u +%F)
