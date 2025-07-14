@@ -1,12 +1,12 @@
 name: Scrape Moroccan Finance News
 
 permissions:
-  contents: write    # allows the workflow to commit & push changes
+  contents: write    # required if you ever commit back to the repo
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # At minute 0 every 2 hours
-  workflow_dispatch:      # allows manual trigger
+    - cron: '0 */2 * * *'    # every 2 hours, minute 0
+  workflow_dispatch:        # manual trigger
 
 jobs:
   scrape-and-notify:
@@ -16,8 +16,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0             # fetch full history so we can commit
-          persist-credentials: true  # enable pushing back via GITHUB_TOKEN
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set today’s date
+        # Exports DATE env var in YYYY-MM-DD UTC format
+        run: echo "DATE=$(date -u +%F)" >> $GITHUB_ENV
 
       - name: Restore state cache
         uses: actions/cache@v3
@@ -25,7 +29,8 @@ jobs:
           path: |
             sent_articles.json
             fetch_failures.json
-          key: state-files-${{ runner.os }}-$(date -u +%F)
+          # Use runner OS + DATE for per-day isolation
+          key: state-files-${{ runner.os }}-${{ env.DATE }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -48,4 +53,4 @@ jobs:
           path: |
             sent_articles.json
             fetch_failures.json
-          key: state-files-${{ runner.os }}-$(date -u +%F)
+          key: state-files-${{ runner.os }}-${{ env.DATE }}
