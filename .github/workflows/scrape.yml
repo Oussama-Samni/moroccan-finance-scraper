@@ -1,12 +1,12 @@
 name: Scrape Moroccan Finance News
 
 permissions:
-  contents: write    # required if you ever commit back to the repo
+  contents: write
 
 on:
   schedule:
     - cron: '0 */2 * * *'    # every 2 hours, minute 0
-  workflow_dispatch:        # manual trigger
+  workflow_dispatch:
 
 jobs:
   scrape-and-notify:
@@ -20,16 +20,14 @@ jobs:
           persist-credentials: true
 
       - name: Set today’s date
-        # Exports DATE env var in YYYY-MM-DD UTC format
         run: echo "DATE=$(date -u +%F)" >> $GITHUB_ENV
 
-      - name: Restore state cache
+      - name: Restore & Save state cache
         uses: actions/cache@v3
         with:
           path: |
             sent_articles.json
             fetch_failures.json
-          # Use runner OS + DATE for per-day isolation
           key: state-files-${{ runner.os }}-${{ env.DATE }}
 
       - name: Set up Python
@@ -38,19 +36,10 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 python-telegram-bot
+        run: pip install requests beautifulsoup4 python-telegram-bot
 
       - name: Run scraper and notify
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scrape_and_notify.py
-
-      - name: Save state cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            sent_articles.json
-            fetch_failures.json
-          key: state-files-${{ runner.os }}-${{ env.DATE }}
