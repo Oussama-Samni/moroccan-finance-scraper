@@ -25,21 +25,37 @@ def save_fetch_failures(count: int) -> None:
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
-from datetime import datetime, date
+from datetime import date
 from urllib.parse import urljoin
 
+from datetime import date
+import json
+
 def load_sent() -> set:
-    """Load the set of URLs already sent, or return empty."""
+    """
+    Load the set of URLs already sent *today*.
+    If the stored date isn’t today, start with an empty set.
+    """
     try:
         with open(SENT_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
-    except FileNotFoundError:
+            data = json.load(f)
+        if data.get("date") != date.today().isoformat():
+            return set()
+        return set(data.get("urls", []))
+    except (FileNotFoundError, json.JSONDecodeError):
         return set()
 
 def save_sent(urls: set) -> None:
-    """Save the updated set of sent URLs back to the JSON file."""
+    """
+    Save today’s date and the list of sent URLs.
+    """
+    payload = {
+        "date": date.today().isoformat(),
+        "urls": sorted(urls)
+    }
     with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(urls), f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
 
 # ===== HTTP fetching with retries =====
 
