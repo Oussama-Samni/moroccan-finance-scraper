@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 */2 * * *'    # every 2 hours, minute 0
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 jobs:
@@ -16,6 +16,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v3
         with:
+          ref: main
           fetch-depth: 0
           persist-credentials: true
 
@@ -38,6 +39,11 @@ jobs:
           echo "----- sent_articles.json workspace contents -----"
           cat sent_articles.json || echo "(file missing)"
           echo "---------------------------------------------"
+
+      - name: Show git status before commit
+        run: |
+          git status
+          git diff --cached --name-only
 
       - name: Commit updated state files
         run: |
