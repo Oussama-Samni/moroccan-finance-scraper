@@ -33,6 +33,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scrape_and_notify.py
 
+      - name: Dump state file for debugging
+        run: |
+          echo "----- sent_articles.json workspace contents -----"
+          cat sent_articles.json || echo "(file missing)"
+          echo "---------------------------------------------"
+
       - name: Commit updated state files
         run: |
           git config user.name "github-actions[bot]"
