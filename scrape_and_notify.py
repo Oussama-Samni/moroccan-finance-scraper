@@ -1,38 +1,38 @@
+```python
 import os
 import time
 import re
 import requests
 import json
 
+from datetime import date
+from urllib.parse import urljoin
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
+
+# ===== State files =====
 SENT_FILE = "sent_articles.json"
 FETCH_FAILURES_FILE = "fetch_failures.json"
 FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
+
+# ===== Fetch failure tracking =====
 
 def load_fetch_failures() -> int:
     """Load current consecutive fetch failure count."""
     try:
         with open(FETCH_FAILURES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return int(data.get("count", 0))
+            return int(json.load(f).get("count", 0))
     except FileNotFoundError:
         return 0
+
 
 def save_fetch_failures(count: int) -> None:
     """Save updated fetch failure count."""
     with open(FETCH_FAILURES_FILE, "w", encoding="utf-8") as f:
         json.dump({"count": count}, f)
-        
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from bs4 import BeautifulSoup
-from datetime import date
-from urllib.parse import urljoin
 
-from datetime import date
-import json
-
-from datetime import date
-import json
+# ===== Sent URLs state =====
 
 def load_sent() -> set:
     """
@@ -45,11 +45,10 @@ def load_sent() -> set:
     except (FileNotFoundError, json.JSONDecodeError):
         return set()
 
-    # Legacy format: list of URLs
     if isinstance(data, list):
+        # Legacy format
         return set(data)
 
-    # New format: dict with "date" and "urls"
     if data.get("date") != date.today().isoformat():
         return set()
     return set(data.get("urls", []))
@@ -66,8 +65,6 @@ def save_sent(urls: set) -> None:
     }
     with open(SENT_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
 
 # ===== HTTP fetching with retries =====
 
@@ -92,43 +89,36 @@ def get_session(
     session.mount("http://", adapter)
     return session
 
+
 def fetch_url(url: str, timeout: float = 10.0) -> str:
     """
     Fetches the given URL with retry logic. Tracks consecutive failures
-    and sends an alert if threshold is exceeded.
+    and re-raises on failure after logging.
     """
     try:
         session = get_session()
         resp = session.get(url, timeout=timeout)
         resp.raise_for_status()
     except Exception as e:
-        # Increment failure count
         failures = load_fetch_failures() + 1
         save_fetch_failures(failures)
         print(f"ERROR: Fetch attempt failed ({failures}): {e}")
-
-        # If threshold reached, send alert and reset counter
         if failures >= FETCH_FAILURE_THRESHOLD:
-            alert_msg = (
-                f"⚠️ Fetch failed {failures} times in a row for {url}. "
-                "Please check connectivity or site availability."
-            )
             save_fetch_failures(0)
-        # Re-raise to halt this run
         raise
 
-    # On success, reset failure counter
     save_fetch_failures(0)
     return resp.text
-
 
 # ===== Parsing HTML and dates =====
 
 BASE_URL = "https://boursenews.ma"
 MONTH_MAP = {
-    "Janvier":"01","Février":"02","Mars":"03","Avril":"04","Mai":"05","Juin":"06",
-    "Juillet":"07","Août":"08","Septembre":"09","Octobre":"10","Novembre":"11","Décembre":"12"
+    "Janvier": "01", "Février": "02", "Mars": "03", "Avril": "04",
+    "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08",
+    "Septembre": "09", "Octobre": "10", "Novembre": "11", "Décembre": "12"
 }
+
 
 def parse_date(date_text: str) -> str:
     m = re.search(r"\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b", date_text)
@@ -140,6 +130,7 @@ def parse_date(date_text: str) -> str:
         return ""
     return f"{year}-{mon_num}-{int(day):02d}"
 
+
 def parse_articles(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     containers = soup.select("div.list_item.margin_top_30.margin_bottom_30 div.row")
@@ -149,34 +140,32 @@ def parse_articles(html: str) -> list[dict]:
         p_tag = c.select_one("p")
         img_tag = c.select_one("img")
         span_date = c.select_one("h3 a span")
-        if not (a_tag and p_tag and img_tag and span_date):
+        if not (a_tag and img_tag and span_date):
             continue
 
-        headline    = a_tag.get_text(strip=True)
-        description = p_tag.get_text(strip=True)
-        link_raw    = a_tag.get("href", "")
-        image_raw   = img_tag.get("src", "")
-        date_text   = span_date.get_text(strip=True)
+        headline = a_tag.get_text(strip=True)
+        description = p_tag.get_text(strip=True) if p_tag else ""
+        link_raw = a_tag.get("href", "")
+        image_raw = img_tag.get("src", "")
+        date_text = span_date.get_text(strip=True)
 
-        link      = urljoin(BASE_URL, link_raw)
+        link = urljoin(BASE_URL, link_raw)
         image_url = urljoin(BASE_URL, image_raw)
-        parsed    = parse_date(date_text)
+        parsed = parse_date(date_text)
 
-        # Skip articles with no headline or invalid link
         if not headline or not link.startswith("http"):
             continue
 
         articles.append({
-            "headline":    headline,
+            "headline": headline,
             "description": description,
-            "link":        link,
-            "image_url":   image_url,
-            "date":        date_text,
+            "link": link,
+            "image_url": image_url,
+            "date": date_text,
             "parsed_date": parsed,
         })
 
     return articles
-
 
 # ===== Telegram sending =====
 
@@ -192,22 +181,17 @@ def send_telegram(message: str) -> None:
     r = requests.post(url, json=payload, timeout=10)
     r.raise_for_status()
 
+
 def send_article(article: dict) -> None:
-    """
-    Sends one article to Telegram as a photo message with caption,
-    omitting the description if it’s empty, or falls back to text-only if the image URL is invalid.
-    """
     import urllib.parse
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    # Prepare fields
-    headline    = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
+    headline = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
     description = article["description"].strip().replace("<", "&lt;").replace(">", "&gt;")
-    link        = article["link"]
+    link = article["link"]
 
-    # Build caption dynamically
     parts = [f"<b>{headline}</b>"]
     if description:
         parts.extend(["", description])
@@ -219,13 +203,11 @@ def send_article(article: dict) -> None:
     ])
     caption = "\n".join(parts)
 
-    # Pre-flight HEAD request to check image
     original_url = article["image_url"]
     try:
         head_resp = requests.head(original_url, timeout=5)
         content_type = head_resp.headers.get("Content-Type", "")
         if head_resp.status_code == 200 and content_type.startswith("image/"):
-            # Encode URL to handle spaces and special characters
             photo_url = urllib.parse.quote(original_url, safe=":/?&=#")
             api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
             payload = {
@@ -242,16 +224,11 @@ def send_article(article: dict) -> None:
     except Exception as e:
         print(f"DEBUG: Image HEAD check failed, falling back to text: {e}")
 
-    # Fallback: send text-only message
     print("DEBUG: Sending text-only fallback")
     send_telegram(caption)
 
 
-
 def send_alert(message: str) -> None:
-    """
-    Sends an alert message to your personal Telegram chat.
-    """
     token = os.getenv("TELEGRAM_TOKEN")
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -277,10 +254,8 @@ def main():
 
     sent_urls = load_sent()
     print(f"DEBUG: Loaded {len(sent_urls)} sent URLs from cache")
-    # Keep only those we haven’t sent yet:
     todays = [a for a in all_today if a["link"] not in sent_urls]
 
-    # If nothing new to send, exit quietly
     if not todays:
         return
 
@@ -291,17 +266,15 @@ def main():
         try:
             send_article(article)
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
-            time.sleep(10) # 0.5 minutes delay between article sends.
+            time.sleep(10)
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
 
-    # After sending all new articles, update sent list
     sent_urls.update(a["link"] for a in todays)
     save_sent(sent_urls)
     print(f"DEBUG: saved {len(sent_urls)} URLs to sent_articles.json")
 
 
-
 if __name__ == "__main__":
     main()
-
+```
