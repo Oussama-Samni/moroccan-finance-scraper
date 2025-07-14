@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 */2 * * *'    # every 2 hours, minute 0
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 jobs:
@@ -18,17 +18,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
-
-      - name: Set today’s date
-        run: echo "DATE=$(date -u +%F)" >> $GITHUB_ENV
-
-      - name: Restore & Save state cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            sent_articles.json
-            fetch_failures.json
-          key: state-files-${{ runner.os }}-${{ env.DATE }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -43,3 +32,13 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scrape_and_notify.py
+
+      - name: Commit updated sent state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_articles.json
+          git diff --quiet && echo "No changes to commit" || git commit -m "chore: update sent_articles.json"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
