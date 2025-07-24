@@ -30,18 +30,24 @@
     Novembre: "11"
     Décembre: "12"
 
-# L’Economiste
+# L’Economiste – rubrique Finances & Banques
 - name: leconomiste
-  list_url: "https://www.leconomiste.com/categorie/March%C3%A9s-Financiers"
+  list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
   selectors:
-    container: "div.views-row"
+    # cada article está dentro de <div class="row"> … </div>
+    container: "div.row"
+    # titular + enlace
     headline: "h2 a"
     link_attr: "href"
-    description: "div.views-field-field_description, p"
+    # este listado no lleva snippet, así que se deja vacío
+    description: ""
+    # miniatura
     image: "img::attr(src)"
-    date: "span.date, span.date-display-single"
-  date_regex: "Le\\s+(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
+    # fecha «25/07/25»
+    date: "span.date-display-single"
+  # dd/mm/yy o dd/mm/aaaa
+  date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
 
 # Médias24
 - name: medias24
