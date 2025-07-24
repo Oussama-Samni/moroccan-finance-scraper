@@ -26,7 +26,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 python-telegram-bot
+        run: pip install requests beautifulsoup4 python-telegram-bot PyYAML   # ← añadido PyYAML
 
       - name: Run scraper and notify
         env:
