@@ -22,57 +22,41 @@
     Octobre: "10"
     Novembre: "11"
     Décembre: "12"
-    
+
 - name: leconomiste
   list_url: "https://www.leconomiste.com/categorie/March%C3%A9s-Financiers"
   base_url: "https://www.leconomiste.com"
   selectors:
-    # contenedor de cada noticia
     container: "div.views-row"
-    # titular + enlace
     headline: "h2 a"
     link_attr: "href"
-    # snippet (si lo hay)
     description: "div.views-field-field_description, p"
-    # miniatura
     image: "img::attr(src)"
-    # fecha «Le 24/07/2025»
     date: "span.date, span.date-display-single"
-  # dd/mm/aaaa
-  date_regex: "Le\\s+(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
+  date_regex: "Le\\s+(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
-  - name: medias24
+- name: medias24
   list_url: "https://medias24.com/categorie/leboursier/actus/"
   base_url: "https://medias24.com"
   selectors:
-    # Cada bloque‑noticia
     container: "article"
-    # Titular + enlace
     headline: "h2 a"
     link_attr: "href"
-    # Descripción breve (si existe)
     description: "p, div.excerpt"
-    # Miniatura
     image: "img::attr(src)"
-    # Fecha estilo «Le 24/7/2025 à 9:34»
     date: "span.date, time"
+  date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
-    - name: ecoactu
+- name: ecoactu
   list_url: "https://ecoactu.ma/finances/bourse/"
   base_url: "https://ecoactu.ma"
   selectors:
-    # cada noticia aparece como <article>
     container: "article"
-    # titular + enlace
     headline: "h2 a"
     link_attr: "href"
-    # snippet (primer párrafo si existe)
     description: "p"
-    # miniatura
     image: "img::attr(src)"
-    # fecha «24 juillet 2025»
     date: "span.entry-date, span.date"
-  # dd mes aaaa en francés
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map:
     Janvier: "01"
@@ -88,26 +72,14 @@
     Novembre: "11"
     Décembre: "12"
 
-  # dd/mm/aaaa
-  date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
-
-  - name: casablanca_bourse
+- name: casablanca_bourse
   list_url: "https://www.casablanca-bourse.com/en/insights-institutionnels"
   base_url: "https://www.casablanca-bourse.com"
   selectors:
-    # tarjeta‑noticia completa
     container: "div.h-full.flex.flex-col.rounded-lg"
-    # titular (dentro del <h3>)
     headline: "h3"
-    # el <a> que envuelve titular y descripción
     link_attr: "href"
-    # snippet (párrafo breve dentro del mismo <a>)
     description: "a p"
-    # miniatura
     image: "img::attr(src)"
-    # fecha «2025-07-15»
     date: "p.text-gray-300.text-xs"
-  # formato AAAA-MM-DD
   date_regex: "(\\d{4})-(\\d{2})-(\\d{2})"
-
-
