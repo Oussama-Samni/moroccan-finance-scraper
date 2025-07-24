@@ -55,7 +55,7 @@
     headline: "h2 a"
     link_attr: "href"
     description: "p"
-    image: "img::attr(src)"
+    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
     date: "span.entry-date, span.date"
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map:
