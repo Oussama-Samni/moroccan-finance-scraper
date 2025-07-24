@@ -49,17 +49,23 @@
   # dd/mm/yy o dd/mm/aaaa
   date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
 
-# Médias24
+# Médias24 – rubrique « Bourse LeBoursier »
 - name: medias24
-  list_url: "https://medias24.com/categorie/leboursier/actus/"
+  list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/"
   base_url: "https://medias24.com"
   selectors:
-    container: "article"
-    headline: "h2 a"
+    # cada noticia está dentro de <div class="recent-post-info">
+    container: "div.recent-post-info"
+    # titular + enlace
+    headline: "h1 a"
     link_attr: "href"
-    description: "p, div.excerpt"
-    image: "img::attr(src)"
-    date: "span.date, time"
+    # descripción breve
+    description: "div.description-recent a"
+    # miniatura
+    image: "span.recent-post-info-img img::attr(src)"
+    # fecha «| Le 21/2/2025 à 11:45»
+    date: "span.date-post"
+  # dd/mm/aaaa (numérico)
   date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
 # EcoActu – Économie Nationale
