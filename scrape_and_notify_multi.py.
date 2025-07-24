@@ -1,0 +1,35 @@
+import yaml
+
+# Reutilizamos funciones ya existentes en tu script actual
+from scrape_and_notify import (
+    fetch_url,
+    send_article,
+    load_sent,
+    save_sent,
+)
+
+# === Cargar fuentes desde sources.yml ===
+with open("sources.yml", "r", encoding="utf-8") as f:
+    SOURCES = yaml.safe_load(f)
+
+def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
+    """
+    Placeholder: por ahora solo muestra cuántos bytes tiene la página.
+    Implementaremos la lógica real en el paso siguiente.
+    """
+    print(f"[DEBUG] {cfg['name']} → {len(html)} bytes descargados")
+    return []
+
+def main():
+    sent_urls = load_sent()
+
+    for src in SOURCES:
+        print(f"[DEBUG] Fetching {src['name']} …")
+        html = fetch_url(src["list_url"])
+        articles = parse_articles_generic(html, src)
+        print(f"[DEBUG] {src['name']}: {len(articles)} artículos parseados")
+
+        # Envío y guardado aún no implementados (lo haremos después)
+
+if __name__ == "__main__":
+    main()
