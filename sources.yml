@@ -3,12 +3,18 @@
   list_url: "https://fnh.ma/articles/actualite-financiere-maroc"
   base_url: "https://fnh.ma"
   selectors:
-    container: "div.td-ss-main-content div[class^='td_module_']"
-    headline: "h3.entry-title a"
-    description: "div.td-excerpt"
+    # cada noticia va dentro de un <div class="row">
+    container: "div.row"
+    # titular + enlace
+    headline: "h2 a"
     link_attr: "href"
-    image: "img.entry-thumb::attr(src)"
-    date: "div.td-post-date"
+    # descripción breve
+    description: "div.list_article_detail p"
+    # miniatura
+    image: "img::attr(src)"
+    # fecha «Lundi 21 Juillet 2025»
+    date: "label.itemdate"
+  # dd mois aaaa (francés)
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map:
     Janvier: "01"
