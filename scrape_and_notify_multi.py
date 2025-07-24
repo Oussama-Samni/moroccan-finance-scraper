@@ -1,38 +1,120 @@
 """
-Scraper multi‑fuente para Oussama.
-Lee `sources.yml`, procesa cada web de finanzas marroquíes en orden,
-filtra las noticias del día y las envía a Telegram evitando duplicados.
+Scraper multi‑fuente.
+Lee `sources.yml`, procesa varios medios financieros marroquíes, filtra las
+noticias del día y las publica en Telegram evitando duplicados.
 """
 
+import os
 import re
 import time
+import urllib.parse
 from datetime import date
 from urllib.parse import urljoin
 
+import requests
 import yaml
 from bs4 import BeautifulSoup
 
-# Reutilizamos utilidades del scraper original
+# Reutilizamos helpers del script original
 from scrape_and_notify import (
-    fetch_url,
-    send_article,
-    load_sent,
-    save_sent,
+    fetch_url,   # HTTP con retries
+    load_sent,   # lee sent_articles.json
+    save_sent,   # guarda sent_articles.json
 )
 
-# === Cargar configuración de fuentes ===
+# === Cargar configuración de fuentes ===
 with open("sources.yml", "r", encoding="utf-8") as f:
     SOURCES = yaml.safe_load(f)
 
+# --------------------------------------------------------------------------- #
+# Utilidades de envío a Telegram                                              #
+# --------------------------------------------------------------------------- #
+
+def _escape_md(text: str) -> str:
+    """Escapa caracteres especiales para Markdown V2 de Telegram."""
+    specials = r"_*[]()~`>#+-=|{}.!\\"
+    return re.sub(f"([{re.escape(specials)}])", r"\\\1", text)
+
+
+def _send_telegram_md(message: str) -> None:
+    """Envía un mensaje de texto usando Markdown V2."""
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": False,
+    }
+    resp = requests.post(url, json=payload, timeout=10)
+    resp.raise_for_status()
+
+
+def send_article(article: dict) -> None:
+    """
+    Envía la noticia formateada:
+      • Intenta imagen + caption MarkdownV2.
+      • Si falla imagen, envía solo texto.
+    """
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    headline_md   = _escape_md(article["headline"])
+    description_md = _escape_md(article["description"])
+    link_md       = _escape_md(article["link"])
+
+    parts = [
+        f"*{headline_md}*",
+        "",
+        description_md,
+        "",
+        f"[Lire l’article complet]({link_md})",
+        "",
+        "@MorrocanFinancialNews"
+    ]
+    caption = "\n".join([p for p in parts if p.strip()])
+
+    # ---------- intento con imagen ----------
+    photo_url = ""
+    if article["image_url"]:
+        try:
+            head = requests.head(article["image_url"], timeout=5)
+            if head.status_code == 200 and head.headers.get("Content-Type", "").startswith("image/"):
+                photo_url = urllib.parse.quote(article["image_url"], safe=":/?&=#")
+        except Exception as e:
+            print(f"[DEBUG] HEAD image failed: {e}")
+
+    if photo_url:
+        api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
+        payload = {
+            "chat_id": chat_id,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "MarkdownV2",
+        }
+        try:
+            resp = requests.post(api_url, json=payload, timeout=10)
+            resp.raise_for_status()
+            return
+        except Exception as e:
+            print(f"[DEBUG] sendPhoto failed, fallback to text: {e}")
+
+    # ---------- fallback texto ----------
+    _send_telegram_md(caption)
+
+# --------------------------------------------------------------------------- #
+# Parsing de artículos                                                        #
+# --------------------------------------------------------------------------- #
 
 def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
-    """Devuelve una lista de artículos según los selectores de cfg."""
+    """Extrae artículos según los selectores definidos en cfg."""
     soup = BeautifulSoup(html, "html.parser")
     sel = cfg["selectors"]
-
     articles = []
+
     for block in soup.select(sel["container"]):
-        # --- titular & link ---------------------------------------------------
+        # Titular y enlace
         a_tag = block.select_one(sel["headline"])
         if not a_tag:
             continue
@@ -42,14 +124,14 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
             continue
         link = urljoin(cfg["base_url"], link_raw)
 
-        # --- descripción ------------------------------------------------------
+        # Descripción
         description = ""
         if sel.get("description"):
-            desc_tag = block.select_one(sel["description"])
-            if desc_tag:
-                description = desc_tag.get_text(strip=True)
+            d_tag = block.select_one(sel["description"])
+            if d_tag:
+                description = d_tag.get_text(strip=True)
 
-        # --- imagen -----------------------------------------------------------
+        # Imagen
         image_url = ""
         img_sel = sel.get("image")
         if img_sel:
@@ -63,29 +145,29 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                 if img_tag and img_tag.has_attr("src"):
                     image_url = urljoin(cfg["base_url"], img_tag["src"])
 
-        # --- fecha ------------------------------------------------------------
+        # Fecha
         date_text = ""
         if sel.get("date"):
-            date_tag = block.select_one(sel["date"])
-            if date_tag:
-                date_text = date_tag.get_text(strip=True)
+            dt_tag = block.select_one(sel["date"])
+            if dt_tag:
+                date_text = dt_tag.get_text(strip=True)
 
         parsed_date = ""
         rex = cfg.get("date_regex")
         if rex and date_text:
             m = re.search(rex, date_text)
             if m:
-                if cfg.get("month_map"):  # meses en francés
+                if cfg.get("month_map"):                   # dd mois aaaa
                     day, mon_name, year = m.groups()
                     mon_num = cfg["month_map"].get(mon_name, "")
                     if mon_num:
                         parsed_date = f"{year}-{mon_num}-{int(day):02d}"
-                else:  # dd/mm/aaaa  o  aaaa-mm-dd
+                else:                                     # numérico
                     g1, g2, g3 = m.groups()
-                    if "/" in date_text:        # dd/mm/aaaa
+                    if "/" in date_text:                  # dd/mm/aaaa
                         d, mth, y = g1, g2, g3
                         parsed_date = f"{y}-{int(mth):02d}-{int(d):02d}"
-                    else:                       # aaaa-mm-dd
+                    else:                                 # aaaa-mm-dd
                         y, mth, d = g1, g2, g3
                         parsed_date = f"{y}-{mth}-{d}"
 
@@ -99,8 +181,12 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                 "parsed_date": parsed_date,
             }
         )
+
     return articles
 
+# --------------------------------------------------------------------------- #
+# Main                                                                        #
+# --------------------------------------------------------------------------- #
 
 def main() -> None:
     today_str = date.today().isoformat()
@@ -127,11 +213,11 @@ def main() -> None:
         print(f"[DEBUG] {src['name']}: {len(todays)} artículos nuevos para hoy")
 
         for idx, art in enumerate(todays, 1):
+            print(f"[INFO] Enviando ({idx}/{len(todays)}) → {art['headline'][:60]}…")
             try:
-                print(f"[INFO] Enviando ({idx}/{len(todays)}) → {art['headline'][:60]}…")
                 send_article(art)
                 sent_urls.add(art["link"])
-                time.sleep(10)  # evita spam en Telegram
+                time.sleep(10)  # evita spam
             except Exception as e:
                 print(f"[ERROR] Falló el envío: {e}")
 
