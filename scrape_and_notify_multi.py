@@ -1,7 +1,7 @@
 """
 Scraper multi‑fuente.
-Lee `sources.yml`, procesa varios medios financieros marroquíes,
-filtra las noticias del día y las publica en Telegram evitando duplicados.
+Lee `sources.yml`, procesa medios financieros marroquíes y envía las noticias
+del día a Telegram evitando duplicados.
 """
 
 import os
@@ -18,7 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # --------------------------------------------------------------------------- #
-# HTTP con User‑Agent propio (corrige el 403 de Medias24)                      #
+# HTTP con User‑Agent propio (Medias24 necesitaba cabecera)                   #
 # --------------------------------------------------------------------------- #
 
 def _get_session(
@@ -49,7 +49,6 @@ def _get_session(
 
 
 def fetch_url(url: str, timeout: float = 10.0) -> str:
-    """Descarga la URL con reintentos y cabeceras UA/Idioma adecuadas."""
     session = _get_session()
     resp = session.get(url, timeout=timeout)
     resp.raise_for_status()
@@ -58,23 +57,19 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
 # --------------------------------------------------------------------------- #
 # Helpers originales                                                          #
 # --------------------------------------------------------------------------- #
-from scrape_and_notify import (
-    load_sent,   # lee sent_articles.json
-    save_sent,   # guarda sent_articles.json
-)
+from scrape_and_notify import load_sent, save_sent
 
-# === Cargar configuración de fuentes ===
+# === Cargar fuentes ===
 with open("sources.yml", "r", encoding="utf-8") as f:
     SOURCES = yaml.safe_load(f)
 
 # --------------------------------------------------------------------------- #
-# Utilidades de envío a Telegram (sin cambios)                               #
+# Utilidades de envío a Telegram                                              #
 # --------------------------------------------------------------------------- #
 
 def _escape_md(text: str) -> str:
     specials = r"_*[]()~`>#+-=|{}.!\\"
     return re.sub(f"([{re.escape(specials)}])", r"\\\1", text)
-
 
 def _send_telegram_md(message: str) -> None:
     token = os.getenv("TELEGRAM_TOKEN")
@@ -88,14 +83,13 @@ def _send_telegram_md(message: str) -> None:
     }
     requests.post(url, json=payload, timeout=10).raise_for_status()
 
-
 def send_article(article: dict) -> None:
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    headline_md   = _escape_md(article["headline"])
+    headline_md    = _escape_md(article["headline"])
     description_md = _escape_md(article["description"])
-    link_md       = _escape_md(article["link"])
+    link_md        = _escape_md(article["link"])
 
     parts = [
         f"*{headline_md}*",
@@ -106,17 +100,18 @@ def send_article(article: dict) -> None:
         "",
         "@MorrocanFinancialNews"
     ]
-    caption = "\n".join([p for p in parts if p.strip()])
+    caption = "\n".join(p for p in parts if p.strip())
 
-    # ---------- intento con imagen ----------
+    # -------- comprobar imagen ----------
     photo_url = ""
     if article["image_url"]:
         try:
-            head = requests.head(article["image_url"], timeout=5)
-            if head.status_code == 200 and head.headers.get("Content-Type", "").startswith("image/"):
-                photo_url = urllib.parse.quote(article["image_url"], safe=":/?&=#")
+            url_img = article["image_url"].replace("(", "%28").replace(")", "%29")
+            resp = requests.get(url_img, stream=True, timeout=5)
+            if resp.status_code == 200 and resp.headers.get("Content-Type", "").startswith("image/"):
+                photo_url = urllib.parse.quote(url_img, safe=":/?&=#")
         except Exception as e:
-            print(f"[DEBUG] HEAD image failed: {e}")
+            print(f"[DEBUG] Image check failed: {e}")
 
     if photo_url:
         api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
@@ -132,11 +127,10 @@ def send_article(article: dict) -> None:
         except Exception as e:
             print(f"[DEBUG] sendPhoto failed, fallback to text: {e}")
 
-    # ---------- fallback texto ----------
     _send_telegram_md(caption)
 
 # --------------------------------------------------------------------------- #
-# Parsing de artículos (sin cambios)                                          #
+# Parsing                                                                     #
 # --------------------------------------------------------------------------- #
 
 def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
@@ -160,6 +154,7 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
             if d_tag:
                 description = d_tag.get_text(strip=True)
 
+        # ------------ imagen --------------
         image_url = ""
         img_sel = sel.get("image")
         if img_sel:
@@ -167,12 +162,18 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                 css, attr = re.match(r"(.+)::attr\((.+)\)", img_sel).groups()
                 img_tag = block.select_one(css)
                 if img_tag and img_tag.has_attr(attr):
-                    image_url = urljoin(cfg["base_url"], img_tag[attr])
+                    raw = img_tag[attr]
+                    if attr == "style" and "background-image" in raw:
+                        m = re.search(r'url\\((["\\\']?)(.*?)\\1\\)', raw)
+                        if m:
+                            raw = m.group(2)
+                    image_url = urljoin(cfg["base_url"], raw)
             else:
                 img_tag = block.select_one(img_sel)
                 if img_tag and img_tag.has_attr("src"):
                     image_url = urljoin(cfg["base_url"], img_tag["src"])
 
+        # ------------ fecha ---------------
         date_text = ""
         if sel.get("date"):
             dt_tag = block.select_one(sel["date"])
@@ -198,16 +199,14 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                         y, mth, d = g1, g2, g3
                         parsed_date = f"{y}-{mth}-{d}"
 
-        articles.append(
-            {
-                "headline": headline,
-                "description": description,
-                "link": link,
-                "image_url": image_url,
-                "date": date_text,
-                "parsed_date": parsed_date,
-            }
-        )
+        articles.append({
+            "headline": headline,
+            "description": description,
+            "link": link,
+            "image_url": image_url,
+            "date": date_text,
+            "parsed_date": parsed_date,
+        })
 
     return articles
 
