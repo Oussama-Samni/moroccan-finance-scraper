@@ -13,32 +13,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Checkout del código (usa la rama desde la que se dispara el workflow)
       - name: Check out repository
         uses: actions/checkout@v3
         with:
-          ref: main
           fetch-depth: 0
           persist-credentials: true
 
+      # 2) Configurar Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
+      # 3) Instalar dependencias
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 python-telegram-bot PyYAML   # ← añadido PyYAML
+        run: pip install requests beautifulsoup4 python-telegram-bot PyYAML
 
-      - name: Run scraper and notify
+      # 4) Ejecutar el nuevo scraper multi‑fuente
+      - name: Run multi‑source scraper (dev)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scrape_and_notify.py
+        run: python scrape_and_notify_multi.py
 
+      # 5) Mostrar estado Git (debug)
       - name: Show git status before commit
         run: |
           git status
           git diff --cached --name-only
 
+      # 6) Commit de archivos de estado si cambian
       - name: Commit updated state files
         run: |
           git config user.name "github-actions[bot]"
