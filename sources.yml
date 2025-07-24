@@ -3,18 +3,12 @@
   list_url: "https://fnh.ma/articles/actualite-financiere-maroc"
   base_url: "https://fnh.ma"
   selectors:
-    # cada noticia va dentro de un <div class="row">
     container: "div.row"
-    # titular + enlace
     headline: "h2 a"
     link_attr: "href"
-    # descripción breve
     description: "div.list_article_detail p"
-    # miniatura
     image: "img::attr(src)"
-    # fecha «Lundi 21 Juillet 2025»
     date: "label.itemdate"
-  # dd mois aaaa (francés)
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map:
     Janvier: "01"
@@ -30,79 +24,12 @@
     Novembre: "11"
     Décembre: "12"
 
-# L’Economiste – rubrique Finances & Banques
+# L’Economiste – rubrique Finances & Banques
 - name: leconomiste
   list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
   selectors:
-    # cada article está dentro de <div class="row"> … </div>
     container: "div.row"
-    # titular + enlace
     headline: "h2 a"
-    link_attr: "href"
-    # este listado no lleva snippet, así que se deja vacío
-    description: ""
-    # miniatura
-    image: "img::attr(src)"
-    # fecha «25/07/25»
-    date: "span.date-display-single"
-  # dd/mm/yy o dd/mm/aaaa
-  date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
-
-# Médias24 – rubrique « Bourse LeBoursier »
-- name: medias24
-  list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/"
-  base_url: "https://medias24.com"
-  selectors:
-    # cada noticia está dentro de <div class="recent-post-info">
-    container: "div.recent-post-info"
-    # titular + enlace
-    headline: "h1 a"
-    link_attr: "href"
-    # descripción breve
-    description: "div.description-recent a"
-    # miniatura
-    image: "span.recent-post-info-img img::attr(src)"
-    # fecha «| Le 21/2/2025 à 11:45»
-    date: "span.date-post"
-  # dd/mm/aaaa (numérico)
-  date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
-
-# EcoActu – Économie Nationale
-- name: ecoactu
-  list_url: "https://ecoactu.ma/economie/economie-nationale/"
-  base_url: "https://ecoactu.ma"
-  selectors:
-    container: "li.list-post"
-    headline: "h2 a"
-    link_attr: "href"
-    description: "div.item-content p"
-    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
-    date: "time.entry-date"
-  date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
-  month_map:
-    Janvier: "01"
-    Février: "02"
-    Mars: "03"
-    Avril: "04"
-    Mai: "05"
-    Juin: "06"
-    Juillet: "07"
-    Août: "08"
-    Septembre: "09"
-    Octobre: "10"
-    Novembre: "11"
-    Décembre: "12"
-
-# Bourse de Casablanca
-- name: casablanca_bourse
-  list_url: "https://www.casablanca-bourse.com/en/insights-institutionnels"
-  base_url: "https://www.casablanca-bourse.com"
-  selectors:
-    container: "div.h-full.flex.flex-col.rounded-lg"
-    headline: "h3"
-    link_attr: "href"
-    description: "a p"
-    image: "img::attr(src)"
-    date: "p.text-gray-300.text-xs"
-  date_regex: "(\\d{4})-(\\d{2})-(\\d{2})"
+    link_attr: "
+::contentReference[oaicite:0]{index=0}
