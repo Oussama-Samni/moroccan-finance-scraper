@@ -1,15 +1,10 @@
 """
-Scraper multi‑fuente.
-Envía diariamente a Telegram los titulares y descripciones de:
-
-• Finances News            • L’Economiste
-• Médias24                 • EcoActu (Économie Nationale)
-• Bourse de Casablanca
-
-Evita duplicados (sent_articles.json).
+Scraper multi‑fuente:
+FinancesNews · L’Economiste · Médias24 · EcoActu (Économie Nationale) ·
+Bourse de Casablanca → Telegram (@MorrocanFinancialNews)
 """
 
-import os, re, time, urllib.parse
+import os, re, time, urllib.parse, urllib3
 from datetime import date
 from urllib.parse import urljoin, urlparse
 
@@ -18,7 +13,9 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ───────────── HTTP session con cabeceras “reales” (Medias24 + UA) ───────── #
+urllib3.disable_warnings()  # suprime warning SSL de Casablanca‑Bourse
+
+# ─────────────── HTTP session ─────────────── #
 
 def _get_session() -> requests.Session:
     s = requests.Session()
@@ -33,225 +30,137 @@ def _get_session() -> requests.Session:
     })
     retry = Retry(
         total=5, backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(["GET", "HEAD"]),
+        status_forcelist=(429,500,502,503,504),
+        allowed_methods=frozenset(["GET","HEAD"]),
     )
     adapter = HTTPAdapter(max_retries=retry)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
+    s.mount("https://", adapter); s.mount("http://", adapter)
     return s
 
+def _get_with_fallback(session: requests.Session, url:str, timeout:float, verify:bool):
+    """Hace GET; si Medias24 responde 403 vuelve a intentar con /amp/"""
+    resp = session.get(url, timeout=timeout, verify=verify)
+    if resp.status_code == 403 and "medias24.com" in url:
+        alt = url.rstrip("/") + "/amp/"
+        print("[DEBUG] Medias24 403 – pruebo AMP:", alt)
+        resp = session.get(alt, timeout=timeout, verify=verify)
+    resp.raise_for_status()
+    return resp
 
-def fetch_url(url: str, timeout: float = 10.0) -> str:
-    s = _get_session()
+def fetch_url(url:str, timeout:float=10.0)->str:
+    s=_get_session()
     verify = not ("casablanca-bourse.com" in urlparse(url).netloc)
-    r = s.get(url, timeout=timeout, verify=verify)
-    r.raise_for_status()
+    r=_get_with_fallback(s, url, timeout, verify)
     return r.text
 
-# ─────────── Estado de URLs enviadas hoy ──────────── #
+# ─────────────── Estado cache ─────────────── #
 from scrape_and_notify import load_sent, save_sent
 with open("sources.yml", encoding="utf-8") as f:
-    SOURCES = yaml.safe_load(f)
+    SOURCES=yaml.safe_load(f)
 
-# ─────────── Helpers Telegram ──────────── #
-
-def _escape_md(t: str) -> str:
+# ─────────────── Telegram helpers ──────────── #
+def _escape_md(t:str)->str:
     return re.sub(r'([_*[\]()~`>#+\-=|{}.!\\])', r'\\\1', t)
 
-def _tg_send_md(msg: str) -> None:
-    tk = os.getenv("TELEGRAM_TOKEN")
-    chat = os.getenv("TELEGRAM_CHAT_ID")
-    requests.post(
-        f"https://api.telegram.org/bot{tk}/sendMessage",
-        json={
-            "chat_id": chat,
-            "text": msg,
-            "parse_mode": "MarkdownV2",
-            "disable_web_page_preview": False,
-        },
-        timeout=10,
-    ).raise_for_status()
+def _tg_send_md(msg:str):
+    tk,chat=os.getenv("TELEGRAM_TOKEN"),os.getenv("TELEGRAM_CHAT_ID")
+    requests.post(f"https://api.telegram.org/bot{tk}/sendMessage",
+                  json={"chat_id":chat,"text":msg,"parse_mode":"MarkdownV2",
+                        "disable_web_page_preview":False},timeout=10).raise_for_status()
 
-def send_article(a: dict) -> None:
-    tk, chat = os.getenv("TELEGRAM_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
-
-    head = _escape_md(a["headline"])
-    desc = _escape_md(a["description"])
-    link = _escape_md(a["link"])
-
-    caption = "\n".join(
-        filter(
-            None,
-            [
-                f"*{head}*",
-                "",              # línea en blanco antes de la descripción
-                desc,
-                "",              # línea en blanco después de la descripción
-                f"[Lire l’article complet]({link})",
-                "",
-                "@MorrocanFinancialNews",
-            ],
-        )
-    )
-
-    photo = ""
+def send_article(a:dict):
+    tk,chat=os.getenv("TELEGRAM_TOKEN"),os.getenv("TELEGRAM_CHAT_ID")
+    head=_escape_md(a["headline"]); desc=_escape_md(a["description"]); link=_escape_md(a["link"])
+    caption="\n".join(filter(None,[f"*{head}*","",desc,"",
+                                   f"[Lire l’article complet]({link})","",
+                                   "@MorrocanFinancialNews"]))
+    photo=""
     if a["image_url"]:
         try:
-            url = a["image_url"].replace("(", "%28").replace(")", "%29")
-            r = requests.get(url, stream=True, timeout=5)
-            if r.ok and r.headers.get("Content-Type", "").startswith("image/"):
-                photo = urllib.parse.quote(url, safe=":/?&=#")
+            url=a["image_url"].replace("(","\%28").replace(")","\%29")
+            r=requests.get(url,stream=True,timeout=5)
+            if r.ok and r.headers.get("Content-Type","").startswith("image/"):
+                photo=urllib.parse.quote(url,safe=":/?&=#")
         except Exception as e:
-            print("[DEBUG] img check:", e)
-
+            print("[DEBUG] img check:",e)
     if photo:
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{tk}/sendPhoto",
-                json={
-                    "chat_id": chat,
-                    "photo": photo,
-                    "caption": caption,
-                    "parse_mode": "MarkdownV2",
-                },
-                timeout=10,
-            ).raise_for_status()
+            requests.post(f"https://api.telegram.org/bot{tk}/sendPhoto",
+                          json={"chat_id":chat,"photo":photo,"caption":caption,
+                                "parse_mode":"MarkdownV2"},timeout=10).raise_for_status()
             return
         except Exception as e:
-            print("[DEBUG] sendPhoto fallback:", e)
-
+            print("[DEBUG] sendPhoto fallback:",e)
     _tg_send_md(caption)
 
-# ─────────── Parsing helpers ──────────── #
-
-def _extract_img(block, sel_img: str, base_url: str) -> str:
+# ─────────────── Parsing helpers ───────────── #
+def _extract_img(block, sel_img:str, base_url:str)->str:
     for s in [x.strip() for x in sel_img.split(",") if x.strip()]:
         if "::attr(" in s:
             css, attr = re.match(r"(.+)::attr\((.+)\)", s).groups()
-            tag = block.select_one(css)
+            tag=block.select_one(css)
             if tag and tag.has_attr(attr):
-                raw = tag[attr]
-                if attr == "style" and "background-image" in raw:
-                    m = re.search(r'url\((["\']?)(.*?)\1\)', raw)
-                    raw = (
-                        m.group(2)
-                        if m
-                        else raw.split("url(", 1)[-1].rstrip(")").strip("\"'")
-                    )
+                raw=tag[attr]
+                if attr=="style" and "background-image" in raw:
+                    m=re.search(r'url\((["\']?)(.*?)\1\)', raw)
+                    raw=m.group(2) if m else raw.split("url(",1)[-1].rstrip(")").strip("\"'")
                 return urljoin(base_url, raw)
         else:
-            tag = block.select_one(s)
+            tag=block.select_one(s)
             if tag and tag.has_attr("src"):
                 return urljoin(base_url, tag["src"])
     return ""
 
-def _meta_description(url: str) -> str:
+def _meta_description(url:str)->str:
     try:
-        html = fetch_url(url, 5)
-        m = re.search(
-            r'<meta property="og:description" content="([^"]+)"', html, re.I
-        )
+        html=fetch_url(url,5)
+        m=re.search(r'<meta property="og:description" content="([^"]+)"',html,re.I)
         return m.group(1).strip() if m else ""
-    except Exception:
-        return ""
+    except Exception: return ""
 
-def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    sel = cfg["selectors"]
-    arts = []
-
+def parse_articles_generic(html:str,cfg:dict)->list[dict]:
+    soup=BeautifulSoup(html,"html.parser"); sel=cfg["selectors"]; out=[]
     for b in soup.select(sel["container"]):
-        a = b.select_one(sel["headline"])
-        if not a:
-            continue
-        head = a.get_text(strip=True)
-        href = a.get(sel.get("link_attr", "href"), "")
-        if not href:
-            continue
-        link = urljoin(cfg["base_url"], href)
-        if link.rstrip("/") == cfg["list_url"].rstrip("/"):
-            continue  # fila-cabecera
-
-        desc = ""
+        a=b.select_one(sel["headline"]); 
+        if not a: continue
+        head=a.get_text(strip=True)
+        href=a.get(sel.get("link_attr","href"),"")
+        if not href: continue
+        link=urljoin(cfg["base_url"],href)
+        if link.rstrip("/")==cfg["list_url"].rstrip("/"): continue
+        desc=""
         if sel.get("description"):
-            d = b.select_one(sel["description"])
-            if d:
-                desc = d.get_text(strip=True)
-        if not desc and cfg["name"] == "leconomiste":
-            desc = _meta_description(link)
-
-        img = _extract_img(b, sel.get("image", ""), cfg["base_url"])
-
-        date_txt = (
-            b.select_one(sel["date"]).get_text(strip=True)
-            if sel.get("date") and b.select_one(sel["date"])
-            else ""
-        )
-
-        parsed = ""
-        rex = cfg.get("date_regex")
-        if rex and date_txt and (m := re.search(rex, date_txt)):
+            d=b.select_one(sel["description"]); 
+            if d: desc=d.get_text(strip=True)
+        if not desc and cfg["name"]=="leconomiste":
+            desc=_meta_description(link)
+        img=_extract_img(b, sel.get("image",""), cfg["base_url"])
+        date_txt=b.select_one(sel["date"]).get_text(strip=True) if sel.get("date") and b.select_one(sel["date"]) else ""
+        parsed=""
+        rex=cfg.get("date_regex")
+        if rex and date_txt and (m:=re.search(rex,date_txt)):
             if cfg.get("month_map"):
-                d, mon, y = m.groups()
-                mn = cfg["month_map"].get(mon, "")
-                if mn:
-                    parsed = f"{y}-{mn}-{int(d):02d}"
+                d,mon,y=m.groups(); mn=cfg["month_map"].get(mon,""); 
+                if mn: parsed=f"{y}-{mn}-{int(d):02d}"
             else:
-                g1, g2, g3 = m.groups()
-                parsed = (
-                    f"{g3}-{int(g2):02d}-{int(g1):02d}"
-                    if "/" in date_txt
-                    else f"{g1}-{g2}-{g3}"
-                )
+                g1,g2,g3=m.groups()
+                parsed=f"{g3}-{int(g2):02d}-{int(g1):02d}" if "/" in date_txt else f"{g1}-{g2}-{g3}"
+        out.append({"headline":head,"description":desc,"link":link,
+                    "image_url":img,"date":date_txt,"parsed_date":parsed})
+    return out
 
-        arts.append(
-            {
-                "headline": head,
-                "description": desc,
-                "link": link,
-                "image_url": img,
-                "date": date_txt,
-                "parsed_date": parsed,
-            }
-        )
-    return arts
-
-# ─────────── Main ─────────── #
-
+# ─────────────── Main ─────────────── #
 def main():
-    today = date.today().isoformat()
-    sent = load_sent()
-    print("[DEBUG] cache len:", len(sent))
-
+    today=date.today().isoformat(); sent=load_sent()
     for src in SOURCES:
-        print("[DEBUG] -->", src["name"])
-        try:
-            html = fetch_url(src["list_url"])
-        except Exception as e:
-            print("[ERROR]", e)
-            continue
-
-        arts = parse_articles_generic(html, src)
-        new = [
-            a
-            for a in arts
-            if (a["parsed_date"] == today or not a["parsed_date"])
-            and a["link"] not in sent
-        ]
-        print(f"[DEBUG] nuevos {len(new)}")
-
+        try: html=fetch_url(src["list_url"])
+        except Exception as e: print("[ERROR]",src["name"],e); continue
+        arts=parse_articles_generic(html,src)
+        new=[a for a in arts if (a["parsed_date"]==today or not a["parsed_date"]) and a["link"] not in sent]
         for a in new:
-            try:
-                send_article(a)
-                sent.add(a["link"])
-                time.sleep(10)
-            except Exception as e:
-                print("[ERROR] envío:", e)
-
+            try: send_article(a); sent.add(a["link"]); time.sleep(10)
+            except Exception as e: print("[ERROR] envío",src["name"],e)
     save_sent(sent)
-    print("[DEBUG] total cache:", len(sent))
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
