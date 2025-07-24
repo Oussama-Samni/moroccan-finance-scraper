@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Checkout del código (usa la rama desde la que se dispara el workflow)
+      # 1) Checkout del código (usa la rama que dispara el workflow)
       - name: Check out repository
         uses: actions/checkout@v3
         with:
