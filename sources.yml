@@ -22,3 +22,20 @@
     Octobre: "10"
     Novembre: "11"
     Décembre: "12"
+- name: leconomiste
+  list_url: "https://www.leconomiste.com/categorie/March%C3%A9s-Financiers"
+  base_url: "https://www.leconomiste.com"
+  selectors:
+    # contenedor de cada noticia
+    container: "div.views-row"
+    # titular + enlace
+    headline: "h2 a"
+    link_attr: "href"
+    # snippet (si lo hay)
+    description: "div.views-field-field_description, p"
+    # miniatura
+    image: "img::attr(src)"
+    # fecha «Le 24/07/2025»
+    date: "span.date, span.date-display-single"
+  # dd/mm/aaaa
+  date_regex: "Le\\s+(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
