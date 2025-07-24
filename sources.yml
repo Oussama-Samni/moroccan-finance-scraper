@@ -1,4 +1,4 @@
-# Finances News
+# Finances News
 - name: financesnews
   list_url: "https://fnh.ma/articles/actualite-financiere-maroc"
   base_url: "https://fnh.ma"
@@ -10,7 +10,7 @@
     image: "img::attr(src)"
     date: "label.itemdate"
   date_regex: '\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b'
-  month_map:
+  month_map: &month_map
     Janvier: "01"
     Février: "02"
     Mars: "03"
@@ -24,7 +24,7 @@
     Novembre: "11"
     Décembre: "12"
 
-# L’Economiste – rubrique Finances & Banques
+# L’Economiste – rubrique Finances & Banques
 - name: leconomiste
   list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
@@ -32,12 +32,12 @@
     container: "div.row"
     headline: "h2 a"
     link_attr: "href"
-    description: ""            # no hay snippet
+    description: ""
     image: "img::attr(src)"
     date: "span.date-display-single"
   date_regex: '(\d{1,2})/(\d{1,2})/(\d{2,4})'
 
-# Médias24 – rubrique « Bourse LeBoursier »
+# Médias24 – rubrique « Bourse LeBoursier »
 - name: medias24
   list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/"
   base_url: "https://medias24.com"
@@ -50,7 +50,7 @@
     date: "span.date-post"
   date_regex: 'Le\s*(\d{1,2})/(\d{1,2})/(\d{4})'
 
-# EcoActu – Économie Nationale
+# EcoActu – Économie Nationale
 - name: ecoactu
   list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
@@ -64,7 +64,7 @@
   date_regex: '\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b'
   month_map: *month_map
 
-# Bourse de Casablanca
+# Bourse de Casablanca
 - name: casablanca_bourse
   list_url: "https://www.casablanca-bourse.com/en/insights-institutionnels"
   base_url: "https://www.casablanca-bourse.com"
