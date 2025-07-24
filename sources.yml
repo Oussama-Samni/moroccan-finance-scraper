@@ -3,7 +3,7 @@
   list_url: "https://fnh.ma/articles/actualite-financiere-maroc"
   base_url: "https://fnh.ma"
   selectors:
-    container: "div.td-ss-main-content div.td_module_6, div.td-ss-main-content div.td_module_16"
+    container: "div.td-ss-main-content div[class^='td_module_']"
     headline: "h3.entry-title a"
     description: "div.td-excerpt"
     link_attr: "href"
