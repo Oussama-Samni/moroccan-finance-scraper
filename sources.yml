@@ -48,15 +48,15 @@
   date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
 - name: ecoactu
-  list_url: "https://ecoactu.ma/finances/bourse/"
+  list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
   selectors:
-    container: "article"
+    container: "li.list-post"
     headline: "h2 a"
     link_attr: "href"
-    description: "p"
+    description: "div.item-content p"
     image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
-    date: "span.entry-date, span.date"
+    date: "time.entry-date"
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map:
     Janvier: "01"
