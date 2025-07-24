@@ -56,6 +56,38 @@
     image: "img::attr(src)"
     # Fecha estilo «Le 24/7/2025 à 9:34»
     date: "span.date, time"
+
+    - name: ecoactu
+  list_url: "https://ecoactu.ma/finances/bourse/"
+  base_url: "https://ecoactu.ma"
+  selectors:
+    # cada noticia aparece como <article>
+    container: "article"
+    # titular + enlace
+    headline: "h2 a"
+    link_attr: "href"
+    # snippet (primer párrafo si existe)
+    description: "p"
+    # miniatura
+    image: "img::attr(src)"
+    # fecha «24 juillet 2025»
+    date: "span.entry-date, span.date"
+  # dd mes aaaa en francés
+  date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
+  month_map:
+    Janvier: "01"
+    Février: "02"
+    Mars: "03"
+    Avril: "04"
+    Mai: "05"
+    Juin: "06"
+    Juillet: "07"
+    Août: "08"
+    Septembre: "09"
+    Octobre: "10"
+    Novembre: "11"
+    Décembre: "12"
+
   # dd/mm/aaaa
   date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
