@@ -91,3 +91,23 @@
   # dd/mm/aaaa
   date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
 
+  - name: casablanca_bourse
+  list_url: "https://www.casablanca-bourse.com/en/insights-institutionnels"
+  base_url: "https://www.casablanca-bourse.com"
+  selectors:
+    # tarjeta‑noticia completa
+    container: "div.h-full.flex.flex-col.rounded-lg"
+    # titular (dentro del <h3>)
+    headline: "h3"
+    # el <a> que envuelve titular y descripción
+    link_attr: "href"
+    # snippet (párrafo breve dentro del mismo <a>)
+    description: "a p"
+    # miniatura
+    image: "img::attr(src)"
+    # fecha «2025-07-15»
+    date: "p.text-gray-300.text-xs"
+  # formato AAAA-MM-DD
+  date_regex: "(\\d{4})-(\\d{2})-(\\d{2})"
+
+
