@@ -9,7 +9,7 @@ import re
 import time
 import urllib.parse
 from datetime import date
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse   # ➊
 
 import requests
 import yaml
@@ -18,7 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # --------------------------------------------------------------------------- #
-# HTTP con User‑Agent propio (Medias24 necesitaba cabecera)                   #
+# HTTP con User‑Agent propio                                                  #
 # --------------------------------------------------------------------------- #
 
 def _get_session(
@@ -49,24 +49,27 @@ def _get_session(
 
 
 def fetch_url(url: str, timeout: float = 10.0) -> str:
+    """Descarga URL con reintentos y UA; salta verificación SSL para casablanca‑bourse."""
     session = _get_session()
-    resp = session.get(url, timeout=timeout)
+    domain = urlparse(url).netloc
+    if "casablanca-bourse.com" in domain:          # ➋
+        resp = session.get(url, timeout=timeout, verify=False)
+    else:
+        resp = session.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
 # --------------------------------------------------------------------------- #
-# Helpers originales                                                          #
+# Helpers originales (sent cache)                                             #
 # --------------------------------------------------------------------------- #
 from scrape_and_notify import load_sent, save_sent
 
-# === Cargar fuentes ===
 with open("sources.yml", "r", encoding="utf-8") as f:
     SOURCES = yaml.safe_load(f)
 
 # --------------------------------------------------------------------------- #
-# Utilidades de envío a Telegram                                              #
+# Utilidades Telegram (sin cambios respecto a la versión anterior)            #
 # --------------------------------------------------------------------------- #
-
 def _escape_md(text: str) -> str:
     specials = r"_*[]()~`>#+-=|{}.!\\"
     return re.sub(f"([{re.escape(specials)}])", r"\\\1", text)
@@ -102,7 +105,6 @@ def send_article(article: dict) -> None:
     ]
     caption = "\n".join(p for p in parts if p.strip())
 
-    # -------- comprobar imagen ----------
     photo_url = ""
     if article["image_url"]:
         try:
@@ -130,9 +132,8 @@ def send_article(article: dict) -> None:
     _send_telegram_md(caption)
 
 # --------------------------------------------------------------------------- #
-# Parsing                                                                     #
+# Parsing (+ soporte style background‑image ya incluido)                      #
 # --------------------------------------------------------------------------- #
-
 def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     sel = cfg["selectors"]
@@ -154,7 +155,6 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
             if d_tag:
                 description = d_tag.get_text(strip=True)
 
-        # ------------ imagen --------------
         image_url = ""
         img_sel = sel.get("image")
         if img_sel:
@@ -173,7 +173,6 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                 if img_tag and img_tag.has_attr("src"):
                     image_url = urljoin(cfg["base_url"], img_tag["src"])
 
-        # ------------ fecha ---------------
         date_text = ""
         if sel.get("date"):
             dt_tag = block.select_one(sel["date"])
@@ -213,7 +212,6 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Main                                                                        #
 # --------------------------------------------------------------------------- #
-
 def main() -> None:
     today_str = date.today().isoformat()
     sent_urls = load_sent()
