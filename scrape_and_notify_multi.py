@@ -1,7 +1,7 @@
 """
 Scraper multi‑fuente.
-Lee `sources.yml`, procesa varios medios financieros marroquíes, filtra las
-noticias del día y las publica en Telegram evitando duplicados.
+Lee `sources.yml`, procesa varios medios financieros marroquíes,
+filtra las noticias del día y las publica en Telegram evitando duplicados.
 """
 
 import os
@@ -14,10 +14,51 @@ from urllib.parse import urljoin
 import requests
 import yaml
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Reutilizamos helpers del script original
+# --------------------------------------------------------------------------- #
+# HTTP con User‑Agent propio (corrige el 403 de Medias24)                      #
+# --------------------------------------------------------------------------- #
+
+def _get_session(
+    total_retries: int = 5,
+    backoff_factor: float = 1.0,
+    status_forcelist: tuple = (429, 500, 502, 503, 504),
+) -> requests.Session:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; OussamaSamni/1.0; "
+            "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
+        ),
+        "Accept-Language": "fr,en;q=0.8",
+    })
+    retry_strategy = Retry(
+        total=total_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def fetch_url(url: str, timeout: float = 10.0) -> str:
+    """Descarga la URL con reintentos y cabeceras UA/Idioma adecuadas."""
+    session = _get_session()
+    resp = session.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp.text
+
+# --------------------------------------------------------------------------- #
+# Helpers originales                                                          #
+# --------------------------------------------------------------------------- #
 from scrape_and_notify import (
-    fetch_url,   # HTTP con retries
     load_sent,   # lee sent_articles.json
     save_sent,   # guarda sent_articles.json
 )
@@ -27,17 +68,15 @@ with open("sources.yml", "r", encoding="utf-8") as f:
     SOURCES = yaml.safe_load(f)
 
 # --------------------------------------------------------------------------- #
-# Utilidades de envío a Telegram                                              #
+# Utilidades de envío a Telegram (sin cambios)                               #
 # --------------------------------------------------------------------------- #
 
 def _escape_md(text: str) -> str:
-    """Escapa caracteres especiales para Markdown V2 de Telegram."""
     specials = r"_*[]()~`>#+-=|{}.!\\"
     return re.sub(f"([{re.escape(specials)}])", r"\\\1", text)
 
 
 def _send_telegram_md(message: str) -> None:
-    """Envía un mensaje de texto usando Markdown V2."""
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -47,16 +86,10 @@ def _send_telegram_md(message: str) -> None:
         "parse_mode": "MarkdownV2",
         "disable_web_page_preview": False,
     }
-    resp = requests.post(url, json=payload, timeout=10)
-    resp.raise_for_status()
+    requests.post(url, json=payload, timeout=10).raise_for_status()
 
 
 def send_article(article: dict) -> None:
-    """
-    Envía la noticia formateada:
-      • Intenta imagen + caption MarkdownV2.
-      • Si falla imagen, envía solo texto.
-    """
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -94,8 +127,7 @@ def send_article(article: dict) -> None:
             "parse_mode": "MarkdownV2",
         }
         try:
-            resp = requests.post(api_url, json=payload, timeout=10)
-            resp.raise_for_status()
+            requests.post(api_url, json=payload, timeout=10).raise_for_status()
             return
         except Exception as e:
             print(f"[DEBUG] sendPhoto failed, fallback to text: {e}")
@@ -104,17 +136,15 @@ def send_article(article: dict) -> None:
     _send_telegram_md(caption)
 
 # --------------------------------------------------------------------------- #
-# Parsing de artículos                                                        #
+# Parsing de artículos (sin cambios)                                          #
 # --------------------------------------------------------------------------- #
 
 def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
-    """Extrae artículos según los selectores definidos en cfg."""
     soup = BeautifulSoup(html, "html.parser")
     sel = cfg["selectors"]
     articles = []
 
     for block in soup.select(sel["container"]):
-        # Titular y enlace
         a_tag = block.select_one(sel["headline"])
         if not a_tag:
             continue
@@ -124,14 +154,12 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
             continue
         link = urljoin(cfg["base_url"], link_raw)
 
-        # Descripción
         description = ""
         if sel.get("description"):
             d_tag = block.select_one(sel["description"])
             if d_tag:
                 description = d_tag.get_text(strip=True)
 
-        # Imagen
         image_url = ""
         img_sel = sel.get("image")
         if img_sel:
@@ -145,7 +173,6 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
                 if img_tag and img_tag.has_attr("src"):
                     image_url = urljoin(cfg["base_url"], img_tag["src"])
 
-        # Fecha
         date_text = ""
         if sel.get("date"):
             dt_tag = block.select_one(sel["date"])
@@ -157,17 +184,17 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
         if rex and date_text:
             m = re.search(rex, date_text)
             if m:
-                if cfg.get("month_map"):                   # dd mois aaaa
+                if cfg.get("month_map"):
                     day, mon_name, year = m.groups()
                     mon_num = cfg["month_map"].get(mon_name, "")
                     if mon_num:
                         parsed_date = f"{year}-{mon_num}-{int(day):02d}"
-                else:                                     # numérico
+                else:
                     g1, g2, g3 = m.groups()
-                    if "/" in date_text:                  # dd/mm/aaaa
+                    if "/" in date_text:
                         d, mth, y = g1, g2, g3
                         parsed_date = f"{y}-{int(mth):02d}-{int(d):02d}"
-                    else:                                 # aaaa-mm-dd
+                    else:
                         y, mth, d = g1, g2, g3
                         parsed_date = f"{y}-{mth}-{d}"
 
@@ -204,7 +231,6 @@ def main() -> None:
         articles = parse_articles_generic(html, src)
         print(f"[DEBUG] {src['name']}: {len(articles)} artículos totales")
 
-        # Filtrar por fecha de hoy (si la tiene) y deduplicar
         todays = [
             a for a in articles
             if (a["parsed_date"] == today_str or not a["parsed_date"])
@@ -217,7 +243,7 @@ def main() -> None:
             try:
                 send_article(art)
                 sent_urls.add(art["link"])
-                time.sleep(10)  # evita spam
+                time.sleep(10)
             except Exception as e:
                 print(f"[ERROR] Falló el envío: {e}")
 
