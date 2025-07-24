@@ -22,6 +22,7 @@
     Octobre: "10"
     Novembre: "11"
     Décembre: "12"
+    
 - name: leconomiste
   list_url: "https://www.leconomiste.com/categorie/March%C3%A9s-Financiers"
   base_url: "https://www.leconomiste.com"
@@ -39,3 +40,22 @@
     date: "span.date, span.date-display-single"
   # dd/mm/aaaa
   date_regex: "Le\\s+(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
+
+  - name: medias24
+  list_url: "https://medias24.com/categorie/leboursier/actus/"
+  base_url: "https://medias24.com"
+  selectors:
+    # Cada bloque‑noticia
+    container: "article"
+    # Titular + enlace
+    headline: "h2 a"
+    link_attr: "href"
+    # Descripción breve (si existe)
+    description: "p, div.excerpt"
+    # Miniatura
+    image: "img::attr(src)"
+    # Fecha estilo «Le 24/7/2025 à 9:34»
+    date: "span.date, time"
+  # dd/mm/aaaa
+  date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
+
