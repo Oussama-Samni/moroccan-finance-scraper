@@ -29,7 +29,8 @@
   list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
   selectors:
-    container: "div.image_une"
+    # portada + filas normales
+    container: "div.image_une, div.views-row"
     headline: "h2 a"
     link_attr: "href"
     description: ""
@@ -37,38 +38,12 @@
     date: "span.date-display-single"
   date_regex: '(\d{1,2})/(\d{1,2})/(\d{2,4})'
 
-# Médias24 – feed RSS LeBoursier
-- name: medias24
-  list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/feed/"
-  base_url: "https://medias24.com"
-  selectors:
-    container: "item"
-    headline: "title"
-    link_attr: "link"
-    description: "description"
-    image: ""
-    date: "pubDate"
-  date_regex: '(\d{2})\s+(\w{3})\s+(\d{4})'
-  month_map:
-    Jan: "01"
-    Feb: "02"
-    Mar: "03"
-    Apr: "04"
-    May: "05"
-    Jun: "06"
-    Jul: "07"
-    Aug: "08"
-    Sep: "09"
-    Oct: "10"
-    Nov: "11"
-    Dec: "12"
-
 # EcoActu – Économie Nationale
 - name: ecoactu
   list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
   selectors:
-    container: "article.item"
+    container: "li.list-post"        # ← de nuevo el selector que sí devuelve noticias
     headline: "h2 a"
     link_attr: "href"
     description: "div.item-content p"
