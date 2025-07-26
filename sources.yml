@@ -24,12 +24,12 @@
     Novembre: "11"
     Décembre: "12"
 
-# L’Economiste – rubrique Finances & Banques
+# L’Economiste – Finances & Banques
 - name: leconomiste
   list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
   selectors:
-    container: "div.row"
+    container: "div.image_une"          # bloque que engloba miniatura + título
     headline: "h2 a"
     link_attr: "href"
     description: ""
@@ -37,25 +37,29 @@
     date: "span.date-display-single"
   date_regex: '(\d{1,2})/(\d{1,2})/(\d{2,4})'
 
-# Médias24 – rubrique « Bourse LeBoursier »
+# Médias24 – feed RSS de LeBoursier
 - name: medias24
-  list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/"
+  list_url: "https://medias24.com/categorie/leboursier/bourse-leboursier/feed/"
   base_url: "https://medias24.com"
   selectors:
-    container: "div.recent-post-info"
-    headline: "h1 a"
-    link_attr: "href"
-    description: "div.description-recent a"
-    image: "span.recent-post-info-img img::attr(src)"
-    date: "span.date-post"
-  date_regex: 'Le\s*(\d{1,2})/(\d{1,2})/(\d{4})'
+    container: "item"
+    headline: "title"
+    link_attr: "link"
+    description: "description"
+    image: ""                # el RSS no trae miniatura
+    date: "pubDate"
+  # «Fri, 25 Jul 2025 09:34:00 +0000»
+  date_regex: '(\d{2})\s+(\w{3})\s+(\d{4})'
+  month_map:
+    Jan: "01"; Feb: "02"; Mar: "03"; Apr: "04"; May: "05"; Jun: "06"
+    Jul: "07"; Aug: "08"; Sep: "09"; Oct: "10"; Nov: "11"; Dec: "12"
 
 # EcoActu – Économie Nationale
 - name: ecoactu
   list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
   selectors:
-    container: "li.list-post"
+    container: "article.item"           # estructura real de la lista
     headline: "h2 a"
     link_attr: "href"
     description: "div.item-content p"
