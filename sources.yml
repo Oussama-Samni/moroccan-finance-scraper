@@ -24,19 +24,21 @@
     Novembre:  "11"
     Décembre:  "12"
 
-# L’Economiste – Finances & Banques
+# L’Economiste – Finances & Banques (RSS)
 - name: leconomiste
-  list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
+  list_url: "https://www.leconomiste.com/categorie/Finances-Banques/feed"
   base_url: "https://www.leconomiste.com"
   selectors:
-    # cada noticia = la columna completa (contiene imagen y <h2>)
-    container: "div.col-xs-12.col-sm-12.col-md-6.col-lg-6"
-    headline: "h2 a"
-    link_attr: "href"
-    description: ""           # siguen sin snippet visible
-    image: "img::attr(src)"
-    date: "span.date-display-single"
-  date_regex: '(\d{1,2})/(\d{1,2})/(\d{2,4})'
+    container: "item"
+    headline: "title"
+    link_attr: "link"
+    description: "description"
+    image: ""            # el RSS no incluye miniatura
+    date: "pubDate"      # «Fri, 26 Jul 2025 09:12:00 +0000»
+  date_regex: '(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})'
+  month_map:
+    Jan: "01"; Feb: "02"; Mar: "03"; Apr: "04"; May: "05"; Jun: "06"
+    Jul: "07"; Aug: "08"; Sep: "09"; Oct: "10"; Nov: "11"; Dec: "12"
 
 
 # EcoActu – Économie Nationale
