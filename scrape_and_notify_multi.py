@@ -1,228 +1,185 @@
 """
-Scraper multi‑fuente.
-Lee `sources.yml`, procesa varios medios financieros marroquíes, filtra las
-noticias del día y las publica en Telegram evitando duplicados.
+Finances News → Telegram (@MorrocanFinancialNews)
+-------------------------------------------------
+Scraper autocontenido y modular.  Añadir nuevas fuentes
+⇒ incluir su bloque en sources.yml y (opcional) ajuste
+de _postprocess() si necesitara algo específico.
 """
 
-import os
-import re
-import time
-import urllib.parse
+import json, os, re, time, urllib.parse, requests, yaml
 from datetime import date
+from pathlib   import Path
+from typing    import Dict, List
+from bs4       import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from urllib.parse import urljoin
 
-import requests
-import yaml
-from bs4 import BeautifulSoup
+# ---------- Configuración ----------
+SRC_FILE   = "sources.yml"
+CACHE_FILE = Path("sent_articles.json")
+TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 
-# Reutilizamos helpers del script original
-from scrape_and_notify import (
-    fetch_url,   # HTTP con retries
-    load_sent,   # lee sent_articles.json
-    save_sent,   # guarda sent_articles.json
-)
+# ---------- Utilidades HTTP ----------
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.0; "
+            "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
+        ),
+        "Accept-Language": "fr,en;q=0.8",
+    })
+    retry = Retry(total=4, backoff_factor=1,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(["GET", "HEAD"]))
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    s.mount("http://",  HTTPAdapter(max_retries=retry))
+    return s
 
-# === Cargar configuración de fuentes ===
-with open("sources.yml", "r", encoding="utf-8") as f:
-    SOURCES = yaml.safe_load(f)
+def fetch(url: str, timeout: float = 10.0) -> str:
+    r = _session().get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.text
 
-# --------------------------------------------------------------------------- #
-# Utilidades de envío a Telegram                                              #
-# --------------------------------------------------------------------------- #
+# ---------- Cache de URLs enviadas ----------
+def _load_cache() -> set:
+    if CACHE_FILE.exists():
+        return set(json.loads(CACHE_FILE.read_text()))
+    return set()
 
+def _save_cache(cache: set) -> None:
+    CACHE_FILE.write_text(json.dumps(list(cache), ensure_ascii=False, indent=2))
+
+# ---------- Telegram ----------
 def _escape_md(text: str) -> str:
-    """Escapa caracteres especiales para Markdown V2 de Telegram."""
-    specials = r"_*[]()~`>#+-=|{}.!\\"
-    return re.sub(f"([{re.escape(specials)}])", r"\\\1", text)
+    return re.sub(r"([_*[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
 
-
-def _send_telegram_md(message: str) -> None:
-    """Envía un mensaje de texto usando Markdown V2."""
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "MarkdownV2",
-        "disable_web_page_preview": False,
-    }
-    resp = requests.post(url, json=payload, timeout=10)
-    resp.raise_for_status()
-
-
-def send_article(article: dict) -> None:
-    """
-    Envía la noticia formateada:
-      • Intenta imagen + caption MarkdownV2.
-      • Si falla imagen, envía solo texto.
-    """
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    headline_md   = _escape_md(article["headline"])
-    description_md = _escape_md(article["description"])
-    link_md       = _escape_md(article["link"])
-
-    parts = [
-        f"*{headline_md}*",
+def _send_telegram(head: str, desc: str, link: str,
+                   image_url: str | None = None) -> None:
+    msg = "\n".join(filter(None, [
+        f"*{_escape_md(head)}*",
         "",
-        description_md,
+        _escape_md(desc),
         "",
-        f"[Lire l’article complet]({link_md})",
+        f"[Lire l’article complet]({_escape_md(link)})",
         "",
         "@MorrocanFinancialNews"
-    ]
-    caption = "\n".join([p for p in parts if p.strip()])
+    ]))
 
-    # ---------- intento con imagen ----------
-    photo_url = ""
-    if article["image_url"]:
+    if image_url:
         try:
-            head = requests.head(article["image_url"], timeout=5)
-            if head.status_code == 200 and head.headers.get("Content-Type", "").startswith("image/"):
-                photo_url = urllib.parse.quote(article["image_url"], safe=":/?&=#")
+            img_ok = requests.head(image_url, timeout=5)
+            if img_ok.ok and img_ok.headers.get("Content-Type", "").startswith("image/"):
+                requests.post(
+                    f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                    json={
+                        "chat_id": TG_CHAT,
+                        "photo": image_url,
+                        "caption": msg,
+                        "parse_mode": "MarkdownV2",
+                    },
+                    timeout=10,
+                ).raise_for_status()
+                return
         except Exception as e:
-            print(f"[DEBUG] HEAD image failed: {e}")
+            print("[WARN] imagen falló, envío texto:", e)
 
-    if photo_url:
-        api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
-        payload = {
-            "chat_id": chat_id,
-            "photo": photo_url,
-            "caption": caption,
+    # Fallback texto
+    requests.post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        json={
+            "chat_id": TG_CHAT,
+            "text": msg,
             "parse_mode": "MarkdownV2",
-        }
-        try:
-            resp = requests.post(api_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            return
-        except Exception as e:
-            print(f"[DEBUG] sendPhoto failed, fallback to text: {e}")
+            "disable_web_page_preview": False,
+        },
+        timeout=10,
+    ).raise_for_status()
 
-    # ---------- fallback texto ----------
-    _send_telegram_md(caption)
-
-# --------------------------------------------------------------------------- #
-# Parsing de artículos                                                        #
-# --------------------------------------------------------------------------- #
-
-def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
-    """Extrae artículos según los selectores definidos en cfg."""
+# ---------- Parsing genérico ----------
+def _parse(src: Dict) -> List[Dict]:
+    html = fetch(src["list_url"])
     soup = BeautifulSoup(html, "html.parser")
-    sel = cfg["selectors"]
-    articles = []
+    sel  = src["selectors"]
 
-    for block in soup.select(sel["container"]):
-        # Titular y enlace
-        a_tag = block.select_one(sel["headline"])
-        if not a_tag:
+    arts = []
+    for bloc in soup.select(sel["container"]):
+        a = bloc.select_one(sel["headline"])
+        if not a:
             continue
-        headline = a_tag.get_text(strip=True)
-        link_raw = a_tag.get(sel.get("link_attr", "href"), "")
-        if not link_raw:
+        title = a.get_text(strip=True)
+        href  = urljoin(src["base_url"], a.get(sel.get("link_attr", "href"), ""))
+        if not href:
             continue
-        link = urljoin(cfg["base_url"], link_raw)
 
-        # Descripción
-        description = ""
+        desc = ""
         if sel.get("description"):
-            d_tag = block.select_one(sel["description"])
-            if d_tag:
-                description = d_tag.get_text(strip=True)
+            d = bloc.select_one(sel["description"])
+            if d:
+                desc = d.get_text(strip=True)
 
-        # Imagen
-        image_url = ""
-        img_sel = sel.get("image")
-        if img_sel:
-            if "::attr(" in img_sel:
-                css, attr = re.match(r"(.+)::attr\((.+)\)", img_sel).groups()
-                img_tag = block.select_one(css)
-                if img_tag and img_tag.has_attr(attr):
-                    image_url = urljoin(cfg["base_url"], img_tag[attr])
-            else:
-                img_tag = block.select_one(img_sel)
-                if img_tag and img_tag.has_attr("src"):
-                    image_url = urljoin(cfg["base_url"], img_tag["src"])
+        img_url = ""
+        if sel.get("image"):
+            img_tag = bloc.select_one(sel["image"].split("::attr(")[0])
+            if img_tag and img_tag.has_attr("src"):
+                img_url = urljoin(src["base_url"], img_tag["src"])
 
-        # Fecha
-        date_text = ""
+        raw_date = ""
         if sel.get("date"):
-            dt_tag = block.select_one(sel["date"])
-            if dt_tag:
-                date_text = dt_tag.get_text(strip=True)
+            d = bloc.select_one(sel["date"])
+            if d:
+                raw_date = d.get_text(strip=True)
 
-        parsed_date = ""
-        rex = cfg.get("date_regex")
-        if rex and date_text:
-            m = re.search(rex, date_text)
-            if m:
-                if cfg.get("month_map"):                   # dd mois aaaa
-                    day, mon_name, year = m.groups()
-                    mon_num = cfg["month_map"].get(mon_name, "")
-                    if mon_num:
-                        parsed_date = f"{year}-{mon_num}-{int(day):02d}"
-                else:                                     # numérico
-                    g1, g2, g3 = m.groups()
-                    if "/" in date_text:                  # dd/mm/aaaa
-                        d, mth, y = g1, g2, g3
-                        parsed_date = f"{y}-{int(mth):02d}-{int(d):02d}"
-                    else:                                 # aaaa-mm-dd
-                        y, mth, d = g1, g2, g3
-                        parsed_date = f"{y}-{mth}-{d}"
+        parsed = ""
+        rx = src.get("date_regex")
+        if rx and raw_date and (m := re.search(rx, raw_date)):
+            if src.get("month_map"):
+                d, mon, y = m.groups()
+                mm = src["month_map"].get(mon)
+                if mm:
+                    parsed = f"{y}-{mm}-{int(d):02d}"
+            else:
+                d, mth, y = m.groups()
+                parsed = f"{y}-{int(mth):02d}-{int(d):02d}"
 
-        articles.append(
-            {
-                "headline": headline,
-                "description": description,
-                "link": link,
-                "image_url": image_url,
-                "date": date_text,
-                "parsed_date": parsed_date,
-            }
-        )
+        arts.append({
+            "title": title,
+            "desc":  desc,
+            "link":  href,
+            "img":   img_url,
+            "pdate": parsed or raw_date
+        })
+    return arts
 
-    return articles
-
-# --------------------------------------------------------------------------- #
-# Main                                                                        #
-# --------------------------------------------------------------------------- #
-
+# ---------- Flujo principal ----------
 def main() -> None:
-    today_str = date.today().isoformat()
-    sent_urls = load_sent()
-    print(f"[DEBUG] URLs enviadas previamente: {len(sent_urls)}")
+    today = date.today().isoformat()
+    cache = _load_cache()
 
-    for src in SOURCES:
-        print(f"[DEBUG] === Procesando {src['name']} ===")
-        try:
-            html = fetch_url(src["list_url"])
-        except Exception as e:
-            print(f"[ERROR] No se pudo descargar {src['list_url']}: {e}")
+    sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
+
+    for src in sources:
+        if src["name"] != "financesnews":       # hay solo una, pero dejamos filtro
             continue
 
-        articles = parse_articles_generic(html, src)
-        print(f"[DEBUG] {src['name']}: {len(articles)} artículos totales")
+        print("— FinancesNews —")
+        for art in _parse(src):
+            if art["link"] in cache:
+                continue
+            if art["pdate"] and art["pdate"] != today:
+                continue
 
-        # Filtrar por fecha de hoy (si la tiene) y deduplicar
-        todays = [
-            a for a in articles
-            if (a["parsed_date"] == today_str or not a["parsed_date"])
-            and a["link"] not in sent_urls
-        ]
-        print(f"[DEBUG] {src['name']}: {len(todays)} artículos nuevos para hoy")
-
-        for idx, art in enumerate(todays, 1):
-            print(f"[INFO] Enviando ({idx}/{len(todays)}) → {art['headline'][:60]}…")
+            print(" Enviando:", art["title"][:60])
             try:
-                send_article(art)
-                sent_urls.add(art["link"])
-                time.sleep(10)  # evita spam
+                _send_telegram(art["title"], art["desc"], art["link"], art["img"])
+                cache.add(art["link"])
+                time.sleep(8)
             except Exception as e:
-                print(f"[ERROR] Falló el envío: {e}")
+                print("[ERROR] Telegram:", e)
 
-    save_sent(sent_urls)
-    print(f"[DEBUG] URLs guardadas: {len(sent_urls)}")
+    _save_cache(cache)
 
 
 if __name__ == "__main__":
