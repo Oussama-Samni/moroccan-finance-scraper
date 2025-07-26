@@ -189,6 +189,7 @@ def parse_articles_generic(html: str, cfg: dict) -> list[dict]:
             if sel.get("date") and b.select_one(sel["date"])
             else ""
         )
+        date_txt = date_txt.replace("\u00A0", " ")  # ← normalize NBSP --------------
 
         parsed = ""
         rex = cfg.get("date_regex")
