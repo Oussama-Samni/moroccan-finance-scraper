@@ -41,19 +41,20 @@
     Jul: "07"; Aug: "08"; Sep: "09"; Oct: "10"; Nov: "11"; Dec: "12"
 
 
-# EcoActu – Économie Nationale
+# EcoActu – Économie Nationale (RSS)
 - name: ecoactu
-  list_url: "https://ecoactu.ma/economie/economie-nationale/"
+  list_url: "https://ecoactu.ma/economie/economie-nationale/feed/"
   base_url: "https://ecoactu.ma"
   selectors:
-    container: "li.list-post"        # ← de nuevo el selector que sí devuelve noticias
-    headline: "h2 a"
-    link_attr: "href"
-    description: "div.item-content p"
-    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
-    date: "time.entry-date"
-  date_regex: '\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b'
+    container: "item"
+    headline: "title"
+    link_attr: "link"
+    description: "description"
+    image: ""          # el RSS no trae miniatura fiable
+    date: "pubDate"    # «Fri, 26 Jul 2025 08:30:00 +0000»
+  date_regex: '(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})'
   month_map: *month_map
+
 
 # Bourse de Casablanca
 - name: casablanca_bourse
