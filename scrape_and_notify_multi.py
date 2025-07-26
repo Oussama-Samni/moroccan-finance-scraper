@@ -165,6 +165,13 @@ def main() -> None:
             continue
 
         print("— FinancesNews —")
+
+        # --- DEBUG: listar todo lo que se ha parseado ---
+        print("\nDEBUG – lista completa parseada:")
+        for a in _parse(src):
+            print(" •", a["title"][:70], "| pdate:", a["pdate"])
+        print("------------------------------------------------\n")
+        
         for art in _parse(src):
             if art["link"] in cache:
                 continue
