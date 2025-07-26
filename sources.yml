@@ -9,7 +9,7 @@
     description: "div.list_article_detail p"
     image: "img::attr(src)"
     date: "label.itemdate"
-  date_regex: '\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b'
+  date_regex: '\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b'
   month_map: &month_map
     Janvier: "01"
     Février: "02"
@@ -24,37 +24,32 @@
     Novembre:  "11"
     Décembre:  "12"
 
-# L’Economiste – Finances & Banques (RSS)
+# L’Economiste – Finances & Banques
 - name: leconomiste
-  list_url: "https://www.leconomiste.com/categorie/Finances-Banques/feed"
+  list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
   base_url: "https://www.leconomiste.com"
   selectors:
-    container: "item"
-    headline: "title"
-    link_attr: "link"
-    description: "description"
-    image: ""            # el RSS no incluye miniatura
-    date: "pubDate"      # «Fri, 26 Jul 2025 09:12:00 +0000»
-  date_regex: '(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})'
-  month_map:
-    Jan: "01"; Feb: "02"; Mar: "03"; Apr: "04"; May: "05"; Jun: "06"
-    Jul: "07"; Aug: "08"; Sep: "09"; Oct: "10"; Nov: "11"; Dec: "12"
+    container: "div.col-xs-12.col-sm-12.col-md-6.col-lg-6"
+    headline: "h2 a"
+    link_attr: "href"
+    description: ""
+    image: "img::attr(src)"
+    date: "span.date-display-single"
+  date_regex: '(\\d{1,2})/(\\d{1,2})/(\\d{2,4})'
 
-
-# EcoActu – Économie Nationale (RSS)
+# EcoActu – Économie Nationale
 - name: ecoactu
-  list_url: "https://ecoactu.ma/economie/economie-nationale/feed/"
+  list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
   selectors:
-    container: "item"
-    headline: "title"
-    link_attr: "link"
-    description: "description"
-    image: ""          # el RSS no trae miniatura fiable
-    date: "pubDate"    # «Fri, 26 Jul 2025 08:30:00 +0000»
-  date_regex: '(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})'
+    container: "li.list-post"
+    headline: "h2 a"
+    link_attr: "href"
+    description: "div.item-content p"
+    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
+    date: "time.entry-date"
+  date_regex: '\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b'
   month_map: *month_map
-
 
 # Bourse de Casablanca
 - name: casablanca_bourse
@@ -67,4 +62,4 @@
     description: "a p"
     image: "img::attr(src)"
     date: "p.text-gray-300.text-xs"
-  date_regex: '(\d{4})-(\d{2})-(\d{2})'
+  date_regex: '(\\d{4})-(\\d{2})-(\\d{2})'
