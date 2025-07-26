@@ -1,9 +1,10 @@
 """
-Finances News → Telegram (@MorrocanFinancialNews)
+Finances News → Telegram (@MorrocanFinancialNews)
 -------------------------------------------------
-Scraper autocontenido y modular.  Añadir nuevas fuentes
-⇒ incluir su bloque en sources.yml y (opcional) ajuste
-de _postprocess() si necesitara algo específico.
+Scraper autocontenido y modular.  
+Para añadir nuevas fuentes:
+  1) Incluye su bloque en sources.yml  
+  2) Si necesita algún ajuste especial, hazlo en _postprocess().
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -15,13 +16,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urljoin
 
-# ---------- Configuración ----------
+# ───────────────────── Configuración ───────────────────── #
 SRC_FILE   = "sources.yml"
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 
-# ---------- Utilidades HTTP ----------
+# ──────────────────── Utilidades HTTP ──────────────────── #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
@@ -31,9 +32,11 @@ def _session() -> requests.Session:
         ),
         "Accept-Language": "fr,en;q=0.8",
     })
-    retry = Retry(total=4, backoff_factor=1,
-                  status_forcelist=(429, 500, 502, 503, 504),
-                  allowed_methods=frozenset(["GET", "HEAD"]))
+    retry = Retry(
+        total=4, backoff_factor=1,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD"])
+    )
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
@@ -43,7 +46,7 @@ def fetch(url: str, timeout: float = 10.0) -> str:
     r.raise_for_status()
     return r.text
 
-# ---------- Cache de URLs enviadas ----------
+# ─────────────── Cache de URLs enviadas ─────────────── #
 def _load_cache() -> set:
     if CACHE_FILE.exists():
         return set(json.loads(CACHE_FILE.read_text()))
@@ -52,7 +55,7 @@ def _load_cache() -> set:
 def _save_cache(cache: set) -> None:
     CACHE_FILE.write_text(json.dumps(list(cache), ensure_ascii=False, indent=2))
 
-# ---------- Telegram ----------
+# ───────────────────── Telegram ───────────────────── #
 def _escape_md(text: str) -> str:
     return re.sub(r"([_*[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
 
@@ -98,13 +101,16 @@ def _send_telegram(head: str, desc: str, link: str,
         timeout=10,
     ).raise_for_status()
 
-# ---------- Parsing genérico ----------
+# ───────────────── Parsing genérico ───────────────── #
 def _parse(src: Dict) -> List[Dict]:
     html = fetch(src["list_url"])
     soup = BeautifulSoup(html, "html.parser")
     sel  = src["selectors"]
 
-    arts = []
+    # FinancesNews: evitar titulares repetidos
+    seen_links: set[str] = set()
+
+    arts: List[Dict] = []
     for bloc in soup.select(sel["container"]):
         a = bloc.select_one(sel["headline"])
         if not a:
@@ -114,6 +120,11 @@ def _parse(src: Dict) -> List[Dict]:
         if not href:
             continue
 
+        # ⬇︎ filtra duplicados (FinancesNews duplica el primer bloque)
+        if src["name"] == "financesnews" and href in seen_links:
+            continue
+        seen_links.add(href)
+
         desc = ""
         if sel.get("description"):
             d = bloc.select_one(sel["description"])
@@ -122,7 +133,9 @@ def _parse(src: Dict) -> List[Dict]:
 
         img_url = ""
         if sel.get("image"):
-            img_tag = bloc.select_one(sel["image"].split("::attr(")[0])
+            # si usa ::attr(src) quitamos la parte ::attr(...)
+            css = sel["image"].split("::attr(")[0]
+            img_tag = bloc.select_one(css)
             if img_tag and img_tag.has_attr("src"):
                 img_url = urljoin(src["base_url"], img_tag["src"])
 
@@ -149,30 +162,30 @@ def _parse(src: Dict) -> List[Dict]:
             "desc":  desc,
             "link":  href,
             "img":   img_url,
-            "pdate": parsed or raw_date
+            "pdate": parsed or raw_date,
         })
     return arts
 
-# ---------- Flujo principal ----------
+# ─────────────────── Flujo principal ─────────────────── #
 def main() -> None:
     today = date.today().isoformat()
     cache = _load_cache()
-
     sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
 
     for src in sources:
-        if src["name"] != "financesnews":       # hay solo una, pero dejamos filtro
+        if src["name"] != "financesnews":     # de momento solo esta fuente
             continue
 
         print("— FinancesNews —")
 
-        # --- DEBUG: listar todo lo que se ha parseado ---
+        # DEBUG: muestra todo lo parseado
+        arts_all = _parse(src)
         print("\nDEBUG – lista completa parseada:")
-        for a in _parse(src):
+        for a in arts_all:
             print(" •", a["title"][:70], "| pdate:", a["pdate"])
         print("------------------------------------------------\n")
-        
-        for art in _parse(src):
+
+        for art in arts_all:
             if art["link"] in cache:
                 continue
             if art["pdate"] and art["pdate"] != today:
