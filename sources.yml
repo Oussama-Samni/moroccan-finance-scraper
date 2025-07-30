@@ -37,3 +37,18 @@
     date:  "span.date-display-single"                        # «31/07/25» o «31/07/2025»
   # dd/mm/yy o dd/mm/yyyy
   date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
+
+# ───────────── Ecoactu – Économie ─────────────
+  - name: ecoactu_nationale
+  list_url: "https://ecoactu.ma/economie/economie-nationale/"
+  base_url: "https://ecoactu.ma"
+  selectors:
+    container: "li.list-post"
+    headline: "h2 a"
+    link_attr: "href"
+    description: "div.item-content p"
+    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
+    date: "time.entry-date"
+  date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
+  month_map: *fr_months
+
