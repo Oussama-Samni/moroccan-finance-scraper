@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 """
-Finances News, L’Economiste (Économie), EcoActu (Économie Nationale)
-y Médias24 (LeBoursier – RSS) → Telegram  (@MorrocanFinancialNews)
-
-Baseline v 1.4
-──────────────
-• Normaliza URLs de imagen antes de `sendPhoto`
-• Escapa TODOS los caracteres especiales de Markdown V2
-• Caption ≤ 1 024 caracteres · Mensaje ≤ 4 096
-• By‑pass de 403 en Médias24:
-    – usa el feed RSS `/feed/`
-    – cabeceras Accept + Referer específicas
-• 100 % modular: añadir fuente = bloque en `sources.yml`
+Médias 24 (LeBoursier RSS) → Telegram (@MorrocanFinancialNews)
+--------------------------------------------------------------
+Baseline v 1.3.1  ·  rama *medias24-dev*
+• Normaliza URLs de imagen antes de *sendPhoto*
+• Escapa TODOS los caracteres especiales de Markdown V2
+• Caption ≤ 1 024 · Mensaje ≤ 4 096
+• Manejo 403 Médias24 → cambia dinámicamente el User‑Agent
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
 from datetime import date
-from pathlib import Path
-from typing import Dict, List
-from bs4 import BeautifulSoup
+from pathlib   import Path
+from typing    import Dict, List
+from bs4       import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import (
-    urljoin, urlsplit, urlunsplit, quote, quote_plus, urlparse,
-)
+from urllib.parse import urljoin, urlsplit, urlunsplit, quote, quote_plus
 
 SRC_FILE   = "sources.yml"
 CACHE_FILE = Path("sent_articles.json")
@@ -31,37 +24,40 @@ TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 
 # ─────────────────────── Session ─────────────────────── #
-def _session(target_host: str | None = None) -> requests.Session:
+_GENERIC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
+_BOT_UA = (
+    "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.1; "
+    "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
+)
+
+def _make_session(ua: str) -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
-            "Gecko/20100101 Firefox/128.0"
-        ),
+        "User-Agent": ua,
         "Accept-Language": "fr,en;q=0.8",
     })
-    # cabeceras extra para evitar 403 en Medias24
-    if target_host and "medias24.com" in target_host:
-        s.headers.update({
-            "Accept": "text/html,application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": "https://medias24.com/"
-        })
-    retry = Retry(
-        total=4, backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(["GET", "HEAD"]),
-    )
+    retry = Retry(total=4, backoff_factor=1,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(["GET", "HEAD"]))
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
 def fetch(url: str, timeout: float = 10.0) -> str:
-    host = urlparse(url).netloc
-    r = _session(host).get(url, timeout=timeout)
+    """
+    • Para medias24.com usamos un UA “de navegador” para evitar el 403.
+    • Resto de sitios siguen con el UA bot.
+    """
+    ua = _GENERIC_UA if "medias24.com" in url else _BOT_UA
+    r  = _make_session(ua).get(url, timeout=timeout)
     r.raise_for_status()
     return r.text
 
-# ───────────────── Cache de URLs enviadas ───────────────── #
+# ───────────────── Cache URLs enviadas ───────────────── #
 def _load_cache() -> set[str]:
     return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
 
@@ -76,14 +72,14 @@ def _escape_md(t: str) -> str:
 def _build_msg(head: str, desc: str, link: str) -> str:
     parts = [
         f"*{_escape_md(head)}*",
-        "",
+        "",                       # 1 línea en blanco
         _escape_md(desc),
-        "",
+        "",                       # otra línea en blanco
         f"[Lire l’article complet]({_escape_md(link)})",
-        "",
+        "",                       # espacio antes de la firma
         "@MorrocanFinancialNews",
     ]
-    return "\n".join(p for p in parts if p.strip())
+    return "\n".join(p for p in parts if p.strip() or p == "")
 
 def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -106,7 +102,8 @@ def _send_telegram(head: str, desc: str, link: str, img: str | None):
 
     if img:
         try:
-            if requests.head(img, timeout=5).headers.get("Content-Type", "").startswith("image/"):
+            r_head = requests.head(img, timeout=5)
+            if r_head.ok and r_head.headers.get("Content-Type", "").startswith("image/"):
                 safe = _norm_img_url(img)
                 requests.post(
                     f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
@@ -134,27 +131,9 @@ def _send_telegram(head: str, desc: str, link: str, img: str | None):
     ).raise_for_status()
 
 # ───────────────────── Parsing genérico ───────────────────── #
-def _extract_first(block: BeautifulSoup, specs: str, base_url: str) -> str:
-    for spec in [s.strip() for s in specs.split(",") if s.strip()]:
-        if "::attr(" in spec:
-            css, attr = re.match(r"(.+)::attr\((.+)\)", spec).groups()
-            tag = block.select_one(css)
-            if tag and tag.has_attr(attr):
-                raw = tag[attr]
-                if attr == "style" and "background-image" in raw:
-                    m = re.search(r'url\((["\']?)(.*?)\1\)', raw)
-                    raw = m.group(2) if m else raw
-                return urljoin(base_url, raw)
-        else:
-            tag = block.select_one(spec)
-            if tag and tag.has_attr("src"):
-                return urljoin(base_url, tag["src"])
-    return ""
-
 def _parse(src: Dict) -> List[Dict]:
-    soup = BeautifulSoup(fetch(src["list_url"]), "html.parser")
-    sel = src["selectors"]
-    seen: set[str] = set()
+    soup = BeautifulSoup(fetch(src["list_url"]), "xml")  # RSS = XML
+    sel  = src["selectors"]
     out: List[Dict] = []
 
     for bloc in soup.select(sel["container"]):
@@ -162,20 +141,19 @@ def _parse(src: Dict) -> List[Dict]:
         if not a:
             continue
         title = a.get_text(strip=True)
-        link = urljoin(src["base_url"], a.get(sel.get("link_attr", "href"), ""))
-        if not link or (src["name"] == "financesnews" and link in seen):
+
+        link_tag = bloc.select_one(sel.get("link_attr", "link"))
+        link     = link_tag.get_text(strip=True) if link_tag else ""
+        if not link:
             continue
-        seen.add(link)
 
         desc = ""
         if sel.get("description"):
             d = bloc.select_one(sel["description"])
             if d:
-                desc = d.get_text(strip=True)
+                desc = BeautifulSoup(d.get_text(), "html.parser").get_text(strip=True)
 
-        img = ""
-        if sel.get("image"):
-            img = _extract_first(bloc, sel["image"], src["base_url"])
+        img = ""   # el feed no trae miniaturas
 
         raw_date = ""
         if sel.get("date"):
@@ -184,38 +162,31 @@ def _parse(src: Dict) -> List[Dict]:
                 raw_date = dt.get_text(strip=True)
 
         parsed = ""
-        if (rx := src.get("date_regex")) and raw_date and (m := re.search(rx, raw_date)):
-            if src.get("month_map"):
-                d, mon, y = m.groups()
-                if (mm := src["month_map"].get(mon)):
-                    parsed = f"{y}-{mm}-{int(d):02d}"
-            else:
-                d, mn, y = m.groups()
-                parsed = f"{y}-{int(mn):02d}-{int(d):02d}"
+        rx = src.get("date_regex")
+        if rx and raw_date and (m := re.search(rx, raw_date)):
+            d, mon, y = m.groups()
+            mm = src["month_map"].get(mon)
+            if mm:
+                parsed = f"{y}-{mm}-{int(d):02d}"
 
         out.append(
             {
                 "title": title,
-                "desc": desc,
-                "link": link,
-                "img": img,
+                "desc":  desc,
+                "link":  link,
+                "img":   img,
                 "pdate": parsed or raw_date,
             }
         )
     return out
 
 # ───────────────────────── Main ───────────────────────── #
-def main():
-    today = date.today().isoformat()
-    cache = _load_cache()
+def main() -> None:
+    today   = date.today().isoformat()
+    cache   = _load_cache()
     sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
 
-    ACTIVE = {
-        "financesnews",
-        "leconomiste_economie",
-        "ecoactu_nationale",
-        "medias24_leboursier",
-    }
+    ACTIVE = {"medias24_leboursier"}      # solo esta fuente en la rama de prueba
 
     for src in sources:
         if src["name"] not in ACTIVE:
@@ -224,13 +195,10 @@ def main():
         print(f"— {src['name']} —")
         try:
             arts = _parse(src)
-        except requests.HTTPError as e:
-            if e.response.status_code == 403:
-                print("[WARN]", src["name"], "– omitido por 403")
-                continue
-            raise
+        except Exception as e:
+            print(f"[WARN] {src['name']} – omitido por error:", e)
+            continue
 
-        # DEBUG
         print("DEBUG – lista completa parseada:")
         for a in arts:
             print(" •", a["title"][:70], "| pdate:", a["pdate"])
@@ -245,9 +213,9 @@ def main():
                 print(" Enviando:", a["title"][:60])
                 _send_telegram(a["title"], a["desc"], a["link"], a["img"])
                 cache.add(a["link"])
-                time.sleep(8)
-            except Exception as ex:
-                print("[ERROR] Telegram:", ex)
+                time.sleep(6)
+            except Exception as e:
+                print("[ERROR] Telegram:", e)
 
     _save_cache(cache)
 
