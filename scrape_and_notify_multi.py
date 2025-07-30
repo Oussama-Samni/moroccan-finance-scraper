@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix”
+Versión “medias24 v4-lite-fix2”
 ────────────────────────────────────────────────────────
-• Envía artículos de los últimos 3 días (hoy, -1, -2)
+• Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Mantiene formato, normalización, cache y jina.ai fallback
+• Quita la línea «Le dd/mm/yyyy à hh:mm» del cuerpo
+• Mantiene normalización, caché y fallback jina.ai
 """
 
-import hashlib, json, os, re, tempfile, time, urllib.parse, requests, yaml
-from datetime import datetime, timedelta
-from pathlib   import Path
-from typing    import Dict, List
-from bs4       import BeautifulSoup
+import hashlib, json, os, re, tempfile, time, urllib.parse, requests
+from datetime   import datetime, timedelta
+from pathlib     import Path
+from typing      import Dict, List
+from bs4         import BeautifulSoup               # noqa: F401 (futuro uso)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 
 # ───────────── Config ───────────── #
-SRC_FILE   = "sources.yml"           # ← no se usa en esta prueba
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
@@ -32,7 +32,7 @@ ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix2)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -98,6 +98,7 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=F
 # ──────── Medias24 specific ─────── #
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")    # ← filtrar fecha+hora
 
 def _parse_medias24(md: str) -> List[Dict]:
     lines = md.splitlines()
@@ -115,13 +116,16 @@ def _parse_medias24(md: str) -> List[Dict]:
             if m2:
                 title, link = m2.groups()
 
-                # primer párrafo (salta vacíos y “===”)
+                # primer párrafo (salta vacíos, ==== y la línea fecha+hora)
                 desc = ""
                 j = i + 2
                 while j < len(lines):
                     txt = lines[j].strip()
-                    if not txt or re.fullmatch(r"=+", txt):
-                        j += 1; continue
+                    if (not txt
+                        or re.fullmatch(r"=+", txt)
+                        or _PAT_DATE.match(txt)):
+                        j += 1
+                        continue
                     desc = re.sub(r"\s+", " ", txt).strip(" …")
                     break
 
@@ -164,7 +168,7 @@ def main():
     print("------------------------------------------------\n")
 
     for a in arts:
-        if a["link"] in cache:          continue
+        if a["link"] in cache:            continue
         if a["pdate"] not in ALLOWED_DATES: continue
         try:
             print(" Enviando:", a["title"][:60])
