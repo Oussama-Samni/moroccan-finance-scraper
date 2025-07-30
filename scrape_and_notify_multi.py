@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix2”
+Versión “medias24 v4-lite-fix3”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Quita la línea «Le dd/mm/yyyy à hh:mm» del cuerpo
-• Mantiene normalización, caché y fallback jina.ai
+• Quita línea «Le dd/mm/yyyy …» y descarta enlaces markdown
+  en la descripción
 """
 
 import hashlib, json, os, re, tempfile, time, urllib.parse, requests
 from datetime   import datetime, timedelta
 from pathlib     import Path
 from typing      import Dict, List
-from bs4         import BeautifulSoup               # noqa: F401 (futuro uso)
+from bs4         import BeautifulSoup          # noqa: F401 (reserva futuro)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
@@ -32,7 +32,7 @@ ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix2)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix3)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -98,7 +98,11 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=F
 # ──────── Medias24 specific ─────── #
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")    # ← filtrar fecha+hora
+_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")     # línea fecha+hora
+
+def _strip_md_links(text:str) -> str:
+    """Elimina enlaces markdown embebidos dejando solo el texto visible."""
+    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
 def _parse_medias24(md: str) -> List[Dict]:
     lines = md.splitlines()
@@ -116,17 +120,18 @@ def _parse_medias24(md: str) -> List[Dict]:
             if m2:
                 title, link = m2.groups()
 
-                # primer párrafo (salta vacíos, ==== y la línea fecha+hora)
+                # primer párrafo válido
                 desc = ""
                 j = i + 2
                 while j < len(lines):
                     txt = lines[j].strip()
                     if (not txt
                         or re.fullmatch(r"=+", txt)
-                        or _PAT_DATE.match(txt)):
+                        or _PAT_DATE.match(txt)
+                        or _PAT_LINK.match(txt)):
                         j += 1
                         continue
-                    desc = re.sub(r"\s+", " ", txt).strip(" …")
+                    desc = _strip_md_links(re.sub(r"\s+", " ", txt)).strip(" …")
                     break
 
                 out.append({
@@ -148,7 +153,7 @@ def fetch_medias24() -> str:
         return cache.read_text(encoding="utf-8")
 
     print("[DEBUG] downloading via jina.ai")
-    url_jina = f"https://r.jina.ai/http://{url_html.lstrip('http://').lstrip('https://')}"
+    url_jina = f"https://r.jina.ai/http://{url_html.removeprefix('http://').removeprefix('https://')}"
     md = _safe_get(url_jina, timeout=15).text
     cache.write_text(md, encoding="utf-8")
     return md
