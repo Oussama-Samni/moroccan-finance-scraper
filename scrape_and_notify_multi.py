@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Finances News, L’Economiste, EcoActu, Médias24 → Telegram
-Baseline robusto v1.3.1
-• Maneja 403 sin abortar
-• Omite artículos ‘Premium’ de Médias24
-• Formato de mensaje con líneas en blanco garantizadas
+Baseline robusto v1.3.2
+• Formato con líneas en blanco garantizadas
+• 403 de Médias24 ignorado de forma segura
+• Omite artículos ‘Premium’
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -26,7 +26,7 @@ def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.1; "
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.2; "
             "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
         ),
         "Accept-Language": "fr,en;q=0.8",
@@ -131,28 +131,35 @@ def _parse(src:Dict)->List[Dict]:
     for bloc in soup.select(sel["container"]):
         if src["name"]=="medias24_leboursier" and _is_premium_medias24(bloc):
             continue
-        a=bloc.select_one(sel["headline"]);  # noqa: E201
-        if not a: continue
+        a = bloc.select_one(sel["headline"])
+        if not a:
+            continue
         title=a.get_text(strip=True)
         link=urljoin(src["base_url"], a.get(sel.get("link_attr","href"),""))
-        if not link or (src["name"]=="financesnews" and link in seen): continue
+        if not link or (src["name"]=="financesnews" and link in seen):
+            continue
         seen.add(link)
-        desc=""; 
+
+        desc=""
         if sel.get("description"):
             d=bloc.select_one(sel["description"])
             if d: desc=d.get_text(strip=True)
+
         img=_extract_first(bloc, sel.get("image",""), src["base_url"]) if sel.get("image") else ""
-        raw_date=""; 
+
+        raw_date=""
         if sel.get("date"):
             dt=bloc.select_one(sel["date"])
             if dt: raw_date=dt.get_text(strip=True)
+
         parsed=""
         if (rx:=src.get("date_regex")) and raw_date and (m:=re.search(rx,raw_date)):
             if src.get("month_map"):
-                d,mon,y=m.groups(); mm=src["month_map"].get(mon); 
+                d,mon,y=m.groups(); mm=src["month_map"].get(mon)
                 if mm: parsed=f"{y}-{mm}-{int(d):02d}"
             else:
                 d,mn,y=m.groups(); parsed=f"{y}-{int(mn):02d}-{int(d):02d}"
+
         out.append({"title":title,"desc":desc,"link":link,
                     "img":img,"pdate":parsed or raw_date})
     return out
