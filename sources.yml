@@ -39,7 +39,7 @@
   date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
 
 # ───────────── Ecoactu – Économie ─────────────
-  - name: ecoactu_nationale
+- name: ecoactu_nationale
   list_url: "https://ecoactu.ma/economie/economie-nationale/"
   base_url: "https://ecoactu.ma"
   selectors:
