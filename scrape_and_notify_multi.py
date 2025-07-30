@@ -1,8 +1,11 @@
+#!/usr/bin/env python3
 """
-Finances News → Telegram (@MorrocanFinancialNews)
--------------------------------------------------
-Añadir nuevas fuentes ⇒ bloque en sources.yml y, si hace falta,
-ajuste puntual en _postprocess().
+FinancesNews (& co) → Telegram (@MorrocanFinancialNews)
+
+Baseline robusto:
+  • Normaliza URLs de imagen (paréntesis, espacios, UTF‑8) antes de sendPhoto
+  • Escapa TODOS los caracteres especiales de Markdown V2
+  • Garantiza que caption ≤ 1 024 caracteres y mensaje ≤ 4 096
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -14,205 +17,152 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urljoin
 
-# ───────────────────── Configuración ───────────────────── #
 SRC_FILE   = "sources.yml"
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 
-# ──────────────────── Utilidades HTTP ──────────────────── #
+# ─────────────────── Session ─────────────────── #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.0; "
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.1; "
             "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
         ),
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
-                  status_forcelist=(429, 500, 502, 503, 504),
+                  status_forcelist=(429,500,502,503,504),
                   allowed_methods=frozenset(["GET","HEAD"]))
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
-def fetch(url: str, timeout: float = 10.0) -> str:
-    r = _session().get(url, timeout=timeout)
+def fetch(url:str, timeout:float=10.0) -> str:
+    r=_session().get(url, timeout=timeout)
     r.raise_for_status()
     return r.text
 
-# ─────────────── Cache de URLs enviadas ─────────────── #
-def _load_cache() -> set:
-    if CACHE_FILE.exists():
-        return set(json.loads(CACHE_FILE.read_text()))
-    return set()
+# ────────────── Cache URLs enviadas ───────────── #
+def _load_cache()->set[str]:
+    return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
 
-def _save_cache(cache: set) -> None:
-    CACHE_FILE.write_text(json.dumps(list(cache), ensure_ascii=False, indent=2))
+def _save_cache(c:set)->None:
+    CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
-# ───────────────────── Telegram ───────────────────── #
-def _escape_md(text: str) -> str:
-    """Escapa todo para Markdown V2 (por si hay caracteres raros)."""
-    return re.sub(r"([_*[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
+# ────────────────── Telegram ─────────────────── #
+_MD_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
+def _escape_md(t:str)->str:
+    return re.sub(f"([{re.escape(_MD_SPECIAL)}])", r"\\\1", t)
 
-def _compose_caption(a: Dict, source_tag: str) -> str:
-    """
-    Devuelve el bloque de texto con el formato:
-        Titular
-        dd Mois aaaa - par <fuente>
-        (línea en blanco)
-        Descripción
-        (línea en blanco)
-        Lire l’article complet
-        (línea en blanco)
-        @MorrocanFinancialNews
-    """
-    date_line = ""
-    if a.get("raw_date"):
-        date_line = f"\n{_escape_md(a['raw_date'])} - par {_escape_md(source_tag)}"
+def _build_msg(head:str, desc:str, link:str)->str:
+    parts=[f"*{_escape_md(head)}*", "", _escape_md(desc), "",
+           f"[Lire l’article complet]({_escape_md(link)})", "",
+           "@MorrocanFinancialNews"]
+    return "\n".join(p for p in parts if p.strip())
 
-    parts = [
-        f"{_escape_md(a['title'])}{date_line}",
-        "",
-        _escape_md(a['desc']),
-        "",
-        f"[Lire l’article complet]({_escape_md(a['link'])})",
-        "",
-        "@MorrocanFinancialNews"
-    ]
-    return "\n".join(parts)
+def _truncate(text:str, limit:int)->str:
+    return text if len(text)<=limit else text[:limit-1]+"…"
 
-def _send_telegram(a: Dict, source_tag: str) -> None:
-    caption = _compose_caption(a, source_tag)
+def _norm_img_url(url:str)->str:
+    # asegura escape de (), espacios y UTF‑8
+    parsed=urllib.parse.urlsplit(url)
+    safe_path=urllib.parse.quote(parsed.path, safe="/%")
+    safe_query=urllib.parse.quote_plus(parsed.query, safe="=&")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc,
+                                    safe_path, safe_query, parsed.fragment))
 
-    # ── Imagen (si la hay y es válida) ──────────────────────────
-    if a["img"]:
+def _send_telegram(head:str, desc:str, link:str, img:str|None):
+    # 1) construye caption / mensaje
+    caption=_truncate(_build_msg(head, desc, link), 1024)
+    fullmsg=_truncate(_build_msg(head, desc, link), 4096)
+
+    # 2) intenta con foto (si hay)
+    if img:
         try:
-            head = requests.head(a["img"], timeout=5)
-            if head.ok and head.headers.get("Content-Type","").startswith("image/"):
-                requests.post(
-                    f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                    json={
-                        "chat_id": TG_CHAT,
-                        "photo": a["img"],
-                        "caption": caption,
-                        "parse_mode": "MarkdownV2",
-                    },
-                    timeout=10,
-                ).raise_for_status()
+            img_head=requests.head(img, timeout=5)
+            if img_head.ok and img_head.headers.get("Content-Type","").startswith("image/"):
+                safe=_norm_img_url(img)
+                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                    json={"chat_id":TG_CHAT, "photo":safe,
+                          "caption":caption, "parse_mode":"MarkdownV2"},
+                    timeout=10).raise_for_status()
                 return
         except Exception as e:
-            print("[WARN] imagen falló, envío solo texto:", e)
+            print("[WARN] sendPhoto falló → fallback texto:", e)
 
-    # ── Fallback texto ──────────────────────────────────────────
-    requests.post(
-        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={
-            "chat_id": TG_CHAT,
-            "text": caption,
-            "parse_mode": "MarkdownV2",
-            "disable_web_page_preview": False,
-        },
-        timeout=10,
-    ).raise_for_status()
+    # 3) texto puro
+    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        json={"chat_id":TG_CHAT, "text":fullmsg,
+              "parse_mode":"MarkdownV2", "disable_web_page_preview":False},
+        timeout=10).raise_for_status()
 
-# ───────────────── Parsing genérico ───────────────── #
-def _parse(src: Dict) -> List[Dict]:
-    html = fetch(src["list_url"])
-    soup = BeautifulSoup(html, "html.parser")
-    sel  = src["selectors"]
-
-    seen_links: set[str] = set()
-    arts: List[Dict] = []
-
+# ─────────────── Parsing genérico ────────────── #
+def _parse(src:Dict)->List[Dict]:
+    soup=BeautifulSoup(fetch(src["list_url"]),"html.parser")
+    sel=src["selectors"]; seen=set(); out=[]
     for bloc in soup.select(sel["container"]):
-        a = bloc.select_one(sel["headline"])
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        href  = urljoin(src["base_url"], a.get(sel.get("link_attr", "href"), ""))
-        if not href or href in seen_links:
-            continue
-        seen_links.add(href)
+        a=bloc.select_one(sel["headline"]); 
+        if not a: continue
+        title=a.get_text(strip=True)
+        link=urljoin(src["base_url"], a.get(sel.get("link_attr","href"),""))
+        if not link or (src["name"]=="financesnews" and link in seen): continue
+        seen.add(link)
 
-        desc = ""
+        desc=""
         if sel.get("description"):
-            d = bloc.select_one(sel["description"])
-            if d:
-                desc = d.get_text(strip=True)
+            d=bloc.select_one(sel["description"])
+            if d: desc=d.get_text(strip=True)
 
-        img_url = ""
+        img=""
         if sel.get("image"):
-            css = sel["image"].split("::attr(")[0]
-            img_tag = bloc.select_one(css)
-            if img_tag and img_tag.has_attr("src"):
-                img_url = urljoin(src["base_url"], img_tag["src"])
+            css=sel["image"].split("::attr(")[0]
+            imgt=bloc.select_one(css)
+            if imgt and imgt.has_attr("src"):
+                img=urljoin(src["base_url"], imgt["src"])
 
-        raw_date = ""
+        raw_date=""
         if sel.get("date"):
-            d = bloc.select_one(sel["date"])
-            if d:
-                raw_date = d.get_text(strip=True)
+            dt=bloc.select_one(sel["date"])
+            if dt: raw_date=dt.get_text(strip=True)
 
-        parsed = ""
-        rx = src.get("date_regex")
-        if rx and raw_date and (m := re.search(rx, raw_date)):
+        parsed=""
+        if (rx:=src.get("date_regex")) and raw_date and (m:=re.search(rx,raw_date)):
             if src.get("month_map"):
-                day, mon, yr = m.groups()
-                mm = src["month_map"].get(mon)
-                if mm:
-                    parsed = f"{yr}-{mm}-{int(day):02d}"
+                d,mon,y=m.groups(); mm=src["month_map"].get(mon); 
+                if mm: parsed=f"{y}-{mm}-{int(d):02d}"
             else:
-                d1, m1, y1 = m.groups()
-                parsed = f"{y1}-{int(m1):02d}-{int(d1):02d}"
+                d,mn,y=m.groups(); parsed=f"{y}-{int(mn):02d}-{int(d):02d}"
 
-        arts.append({
-            "title": title,
-            "desc":  desc,
-            "link":  href,
-            "img":   img_url,
-            "pdate": parsed or raw_date,
-            "raw_date": raw_date,      # ⇦ necesario para la línea de fecha
-        })
-    return arts
+        out.append({"title":title,"desc":desc,"link":link,
+                    "img":img,"pdate":parsed or raw_date})
+    return out
 
-# ─────────────────── Flujo principal ─────────────────── #
-def main() -> None:
-    today  = date.today().isoformat()
-    cache  = _load_cache()
-    config = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
-
-    for src in config:
+# ─────────────────── Main ──────────────────── #
+def main():
+    today=date.today().isoformat()
+    cache=_load_cache()
+    for src in yaml.safe_load(open(SRC_FILE,encoding="utf-8")):
         if src["name"] not in {"financesnews", "leconomiste_economie"}:
-            continue            # de momento trabajamos con estas dos
-
-        tag = src["name"].replace("_", " ")   # ejemplo: leconomiste_economie → leconomiste economie
+            continue
         print(f"— {src['name']} —")
-
-        arts = _parse(src)
-
-        # DEBUG: lista completa
-        print("\nDEBUG – lista completa parseada:")
-        for a in arts:
-            print(" •", a["title"][:70], "| pdate:", a["pdate"])
+        arts=_parse(src)
+        print("DEBUG – lista completa parseada:")
+        for a in arts: print(" •",a["title"][:70],"| pdate:",a["pdate"])
         print("------------------------------------------------\n")
 
-        for art in arts:
-            if art["link"] in cache:           # ya enviado
-                continue
-            if art["pdate"] and art["pdate"] != today:
-                continue                       # no es de hoy
-
-            print(" Enviando:", art["title"][:60])
+        for a in arts:
+            if a["link"] in cache: continue
+            if a["pdate"] and a["pdate"]!=today: continue
             try:
-                _send_telegram(art, tag)
-                cache.add(art["link"])
-                time.sleep(8)
+                print(" Enviando:", a["title"][:60])
+                _send_telegram(a["title"], a["desc"], a["link"], a["img"])
+                cache.add(a["link"]); time.sleep(8)
             except Exception as e:
                 print("[ERROR] Telegram:", e)
 
     _save_cache(cache)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
