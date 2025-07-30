@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix3”
+Versión “medias24 v4-lite-fix4”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Quita línea «Le dd/mm/yyyy …» y descarta enlaces markdown
-  en la descripción
+• Elimina líneas ‘Le dd/mm/yyyy…’ y enlaces markdown en descripción
+• SIN tarjeta de preview de Telegram
+• Si es posible adjunta la imagen og:image del artículo
 """
 
 import hashlib, json, os, re, tempfile, time, urllib.parse, requests
 from datetime   import datetime, timedelta
-from pathlib     import Path
-from typing      import Dict, List
-from bs4         import BeautifulSoup          # noqa: F401 (reserva futuro)
+from pathlib    import Path
+from typing     import Dict, List
+from bs4        import BeautifulSoup          # noqa: F401 (reserva futuro)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
@@ -32,7 +33,7 @@ ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix3)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix4)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -67,28 +68,52 @@ def _norm_img(url:str)->str:
     return urlunsplit((sch, net, quote(path, safe='/%'),
                        quote_plus(query, safe='=&'), frag))
 
+def _find_og_image(url:str) -> str:
+    """Intenta localizar <meta property="og:image" …> en el artículo."""
+    try:
+        html = _safe_get(url, timeout=8).text
+        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
 def _send(title:str, desc:str, link:str, img:str|None):
     caption = _mk_msg(title, desc, link)[:1024]
     body    = _mk_msg(title, desc, link)[:4096]
 
-    if img:
+    # ── 1) aseguramos una imagen si es posible ──────────────────────────
+    img_to_use = img or _find_og_image(link)
+
+    # ── 2) intentamos enviar foto + caption ─────────────────────────────
+    if img_to_use:
         try:
-            _session().head(img, timeout=5).raise_for_status()
-            safe = _norm_img(img)
+            _session().head(img_to_use, timeout=5).raise_for_status()
+            safe = _norm_img(img_to_use)
             _session().post(
                 f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                json={"chat_id": TG_CHAT, "photo": safe,
-                      "caption": caption, "parse_mode": "MarkdownV2"},
-                timeout=10).raise_for_status()
+                json={
+                    "chat_id": TG_CHAT,
+                    "photo": safe,
+                    "caption": caption,
+                    "parse_mode": "MarkdownV2"
+                },
+                timeout=10
+            ).raise_for_status()
             return
         except Exception:
-            pass   # fallback texto
+            pass   # si falla, cae al mensaje plano
 
+    # ── 3) mensaje solo-texto SIN preview ───────────────────────────────
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id": TG_CHAT, "text": body,
-              "parse_mode": "MarkdownV2", "disable_web_page_preview": False},
-        timeout=10).raise_for_status()
+        json={
+            "chat_id": TG_CHAT,
+            "text": body,
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": True
+        },
+        timeout=10
+    ).raise_for_status()
 
 # ───────────── Cache ───────────── #
 def _load_cache()->set[str]:
@@ -98,10 +123,8 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=F
 # ──────── Medias24 specific ─────── #
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")     # línea fecha+hora
-
+_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
 def _strip_md_links(text:str) -> str:
-    """Elimina enlaces markdown embebidos dejando solo el texto visible."""
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
 def _parse_medias24(md: str) -> List[Dict]:
@@ -114,13 +137,10 @@ def _parse_medias24(md: str) -> List[Dict]:
             d, mn, y = m.groups()
             pdate = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            # título + link
             link_line = lines[i + 1]
             m2 = _PAT_LINK.match(link_line)
             if m2:
                 title, link = m2.groups()
-
-                # primer párrafo válido
                 desc = ""
                 j = i + 2
                 while j < len(lines):
@@ -129,8 +149,7 @@ def _parse_medias24(md: str) -> List[Dict]:
                         or re.fullmatch(r"=+", txt)
                         or _PAT_DATE.match(txt)
                         or _PAT_LINK.match(txt)):
-                        j += 1
-                        continue
+                        j += 1; continue
                     desc = _strip_md_links(re.sub(r"\s+", " ", txt)).strip(" …")
                     break
 
@@ -138,7 +157,7 @@ def _parse_medias24(md: str) -> List[Dict]:
                     "title": title,
                     "desc":  desc,
                     "link":  link,
-                    "img":   "",
+                    "img":   "",          # se completará en _send
                     "pdate": pdate,
                 })
             i += 2
@@ -173,7 +192,7 @@ def main():
     print("------------------------------------------------\n")
 
     for a in arts:
-        if a["link"] in cache:            continue
+        if a["link"] in cache:              continue
         if a["pdate"] not in ALLOWED_DATES: continue
         try:
             print(" Enviando:", a["title"][:60])
