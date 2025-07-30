@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Finances News · L’Economiste (Économie) · EcoActu (Éco Nationale) · Médias24 (LeBoursier)
-→ Telegram (@MorrocanFinancialNews)
-
-Baseline robusto v1.3.2
-• Normaliza URLs de imagen antes de sendPhoto
-• Escapa TODOS los caracteres especiales de Markdown V2
-• Caption ≤ 1 024 · Mensaje ≤ 4 096
-• Fuente nueva = bloque en sources.yml  (tocar _SPECIALS solo si es imprescindible)
+Finances News, L’Economiste (Économie), EcoActu (Éco. Nationale)
+y Médias24‑LeBoursier  →  Telegram (@MorrocanFinancialNews)
+-----------------------------------------------------------------
+Baseline v1.3.3
+• normaliza URLs de imagen antes de sendPhoto
+• escapa TODOS los caracteres especiales (Markdown V2)
+• caption ≤ 1 024 car. · mensaje ≤ 4 096
+• bypass 403 de Médias24 RSS: cookie «test_cookie=1»
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -25,38 +25,33 @@ TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 
 # ─────────────────────── Session ─────────────────────── #
-def _base_session() -> requests.Session:
+def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.2; "
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.3; "
             "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
         ),
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
                   status_forcelist=(429, 500, 502, 503, 504),
-                  allowed_methods=frozenset(["GET","HEAD"]))
+                  allowed_methods=frozenset(["GET", "HEAD"]))
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
+
 def fetch(url: str, timeout: float = 10.0) -> str:
-    """
-    Descarga la URL con manejo especial para *medias24* RSS:
-      – Añade Referer + Accept que evitan el 403.
-    Lanza HTTPError salvo que 403 provenga de medias24 (lo trata el llamador).
-    """
-    sess = _base_session()
-    netloc = urlparse(url).netloc
-    if "medias24.com" in netloc and "/feed" in url:
-        sess.headers.update({
-            "Referer": "https://medias24.com/",
-            "Accept":  "application/rss+xml, */*;q=0.9",
-        })
-    resp = sess.get(url, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
+    sess = _session()
+
+    # --- bypass 403 de Médias24 RSS (cookie test_cookie=1) ---
+    if "medias24.com" in urlparse(url).netloc:
+        sess.cookies.set("test_cookie", "1", domain=".medias24.com")
+
+    r = sess.get(url, timeout=timeout, headers={"Referer": url})
+    r.raise_for_status()
+    return r.text
 
 # ───────────────── Cache de URLs enviadas ───────────────── #
 def _load_cache() -> set[str]:
@@ -83,16 +78,19 @@ def _build_msg(head: str, desc: str, link: str) -> str:
     return "\n".join(p for p in parts if p.strip())
 
 def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 def _norm_img_url(url: str) -> str:
     sch, net, path, query, frag = urlsplit(url)
-    return urlunsplit((
-        sch, net,
-        quote(path, safe="/%"),
-        quote_plus(query, safe="=&"),
-        frag,
-    ))
+    return urlunsplit(
+        (
+            sch,
+            net,
+            quote(path, safe="/%"),
+            quote_plus(query, safe="=&"),
+            frag,
+        )
+    )
 
 def _send_telegram(head: str, desc: str, link: str, img: str | None):
     caption = _truncate(_build_msg(head, desc, link), 1_024)
@@ -100,12 +98,14 @@ def _send_telegram(head: str, desc: str, link: str, img: str | None):
 
     if img:
         try:
-            if requests.head(img, timeout=5).headers.get("Content-Type","").startswith("image/"):
+            r_head = requests.head(img, timeout=5)
+            if r_head.ok and r_head.headers.get("Content-Type", "").startswith("image/"):
+                safe = _norm_img_url(img)
                 requests.post(
                     f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                     json={
                         "chat_id": TG_CHAT,
-                        "photo": _norm_img_url(img),
+                        "photo": safe,
                         "caption": caption,
                         "parse_mode": "MarkdownV2",
                     },
@@ -113,9 +113,8 @@ def _send_telegram(head: str, desc: str, link: str, img: str | None):
                 ).raise_for_status()
                 return
         except Exception as e:
-            print("[WARN] sendPhoto falló → fallback texto:", e)
+            print("[WARN] sendPhoto falló → texto:", e)
 
-    # Fallback a texto
     requests.post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
         json={
@@ -146,17 +145,9 @@ def _extract_first(block: BeautifulSoup, specs: str, base_url: str) -> str:
     return ""
 
 def _parse(src: Dict) -> List[Dict]:
-    try:
-        html = fetch(src["list_url"])
-    except requests.HTTPError as e:
-        if e.response.status_code == 403 and "medias24.com" in src["base_url"]:
-            print("[WARN] medias24_leboursier – omitido por error:", e)
-            return []
-        raise
-
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(fetch(src["list_url"]), "html.parser")
     sel = src["selectors"]
-    seen: set[str] = set()       # FinancesNews duplica el primer bloque
+    seen: set[str] = set()
     out: List[Dict] = []
 
     for bloc in soup.select(sel["container"]):
@@ -175,7 +166,7 @@ def _parse(src: Dict) -> List[Dict]:
             if d:
                 desc = d.get_text(strip=True)
 
-        img = _extract_first(bloc, sel.get("image",""), src["base_url"]) if sel.get("image") else ""
+        img = _extract_first(bloc, sel.get("image", ""), src["base_url"]) if sel.get("image") else ""
 
         raw_date = ""
         if sel.get("date"):
@@ -193,37 +184,43 @@ def _parse(src: Dict) -> List[Dict]:
                 d, mn, y = m.groups()
                 parsed = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-        out.append({
-            "title":  title,
-            "desc":   desc,
-            "link":   link,
-            "img":    img,
-            "pdate":  parsed or raw_date,
-        })
+        out.append(
+            {
+                "title": title,
+                "desc": desc,
+                "link": link,
+                "img": img,
+                "pdate": parsed or raw_date,
+            }
+        )
     return out
 
 # ───────────────────────── Main ───────────────────────── #
 def main():
-    today  = date.today().isoformat()
-    cache  = _load_cache()
-    ACTIVE = {"financesnews", "leconomiste_economie",
-              "ecoactu_nationale", "medias24_leboursier"}
+    today = date.today().isoformat()
+    cache = _load_cache()
+    sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
 
-    for src in yaml.safe_load(open(SRC_FILE, encoding="utf-8")):
+    ACTIVE = {"financesnews", "leconomiste_economie", "ecoactu_nationale", "medias24_leboursier"}
+
+    for src in sources:
         if src["name"] not in ACTIVE:
             continue
 
         print(f"— {src['name']} —")
-        arts = _parse(src)
+        try:
+            arts = _parse(src)
+        except Exception as e:
+            print(f"[WARN] {src['name']} – omitido por error:", e)
+            continue
 
-        # DEBUG
         print("DEBUG – lista completa parseada:")
         for a in arts:
             print(" •", a["title"][:70], "| pdate:", a["pdate"])
         print("------------------------------------------------\n")
 
         for a in arts:
-            if a["link"] in cache:             # ya enviado
+            if a["link"] in cache:
                 continue
             if a["pdate"] and a["pdate"] != today:
                 continue
