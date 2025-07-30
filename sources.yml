@@ -23,3 +23,19 @@
     Octobre:    "10"
     Novembre:   "11"
     Décembre:   "12"
+
+    # L’Economiste – Finances & Banques
+- name: leconomiste
+  list_url: "https://www.leconomiste.com/categorie/Finances-Banques"
+  base_url: "https://www.leconomiste.com"
+  selectors:
+    # Cada noticia ocupa la mitad de la fila (imagen + texto)
+    container: "div.col-xs-12.col-sm-12.col-md-6.col-lg-6"
+    headline: "h2 a"
+    link_attr: "href"
+    description: ""                # se llenará vía _meta_description()
+    image: "div.image_une img::attr(src)"
+    date: "span.date-display-single"
+  # dd/mm/aa o dd/mm/aaaa
+  date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
+
