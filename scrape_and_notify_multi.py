@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Finances News, L’Economiste (Économie), EcoActu (Économie Nationale)
-y Médias24 (LeBoursier / Actus) → Telegram (@MorrocanFinancialNews)
--------------------------------------------------------------------
-Baseline robusto v1.3.1
-• Normaliza URLs de imagen antes de sendPhoto
-• Escapa TODOS los caracteres especiales de Markdown V2
-• Caption ≤ 1 024 caracteres · Mensaje ≤ 4 096
-• Retry específico para Médias24 403 → /amp/ → /amp/?outputType=amp&refresh=true
+Finances News, L’Economiste (Économie) , EcoActu (Économie Nationale)
+y Médias24 (LeBoursier) → Telegram  @MorrocanFinancialNews
+------------------------------------------------------------------------
+Baseline robusto v1.3
+• Normaliza URLs de imagen antes de sendPhoto
+• Escapa TODOS los caracteres especiales de Markdown V2
+• Caption ≤ 1 024 caracteres · Mensaje ≤ 4 096
+• Maneja 403 sin abortar y salta artículos “Premium” de Médias24
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -29,7 +29,7 @@ def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3.1; "
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3; "
             "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
         ),
         "Accept-Language": "fr,en;q=0.8",
@@ -41,29 +41,27 @@ def _session() -> requests.Session:
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
-
-def _get_with_fallback(url: str, timeout: float = 10.0) -> requests.Response:
-    """
-    Recupera la página.  Si es Médias24 y responde 403:
-      1) intenta /amp/
-      2) intenta /amp/?outputType=amp&refresh=true
-    """
+# ---------- fetch con handling especial Médias24 ---------- #
+def _get_with_fallback(url:str, timeout:float)->requests.Response:
     sess = _session()
-    resp = sess.get(url, timeout=timeout)
-    if resp.status_code == 403 and "medias24.com" in url:
+    resp  = sess.get(url, timeout=timeout)
+    if resp.status_code==403 and "medias24.com" in url:
         alt = url.rstrip("/") + "/amp/"
         print("[DEBUG] Médias24 403 – pruebo AMP:", alt)
         resp = sess.get(alt, timeout=timeout)
-        if resp.status_code == 403:
+        if resp.status_code==403:
             alt2 = alt + "?outputType=amp&refresh=true"
             print("[DEBUG] Médias24 403 – pruebo AMP+OT:", alt2)
             resp = sess.get(alt2, timeout=timeout)
-    resp.raise_for_status()
     return resp
 
-
-def fetch(url: str, timeout: float = 10.0) -> str:
-    return _get_with_fallback(url, timeout).text
+def fetch(url: str, timeout: float = 10.0) -> str | None:
+    """Devuelve HTML o None si la URL devuelve 403 definitivo."""
+    r = _get_with_fallback(url, timeout)
+    if r.status_code == 403:
+        return None
+    r.raise_for_status()
+    return r.text
 
 # ───────────────── Cache de URLs enviadas ───────────────── #
 def _load_cache() -> set[str]:
@@ -156,13 +154,26 @@ def _extract_first(block: BeautifulSoup, specs: str, base_url: str) -> str:
                 return urljoin(base_url, tag["src"])
     return ""
 
+def _is_premium_medias24(bloc: BeautifulSoup) -> bool:
+    """True si el bloque contiene icono ‘premium-post’."""
+    return bool(bloc.select_one("span.premium-post"))
+
 def _parse(src: Dict) -> List[Dict]:
-    soup = BeautifulSoup(fetch(src["list_url"]), "html.parser")
+    html = fetch(src["list_url"])
+    if html is None:
+        print(f"[WARN] {src['name']} – omitido por 403")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
     sel = src["selectors"]
     seen: set[str] = set()
     out: List[Dict] = []
 
     for bloc in soup.select(sel["container"]):
+        # ----- filtro Premium específico -----
+        if src["name"] == "medias24_leboursier" and _is_premium_medias24(bloc):
+            continue
+
         a = bloc.select_one(sel["headline"])
         if not a:
             continue
@@ -174,7 +185,8 @@ def _parse(src: Dict) -> List[Dict]:
 
         desc = ""
         if sel.get("description"):
-            if (d := bloc.select_one(sel["description"])):
+            d = bloc.select_one(sel["description"])
+            if d:
                 desc = d.get_text(strip=True)
 
         img = ""
@@ -183,7 +195,8 @@ def _parse(src: Dict) -> List[Dict]:
 
         raw_date = ""
         if sel.get("date"):
-            if (dt := bloc.select_one(sel["date"])):
+            dt = bloc.select_one(sel["date"])
+            if dt:
                 raw_date = dt.get_text(strip=True)
 
         parsed = ""
@@ -227,18 +240,22 @@ def main():
         print(f"— {src['name']} —")
         arts = _parse(src)
 
+        # DEBUG
         print("DEBUG – lista completa parseada:")
         for a in arts:
             print(" •", a["title"][:70], "| pdate:", a["pdate"])
         print("------------------------------------------------\n")
 
         for a in arts:
-            if a["link"] in cache or (a["pdate"] and a["pdate"] != today):
+            if a["link"] in cache:
+                continue
+            if a["pdate"] and a["pdate"] != today:
                 continue
             try:
                 print(" Enviando:", a["title"][:60])
                 _send_telegram(a["title"], a["desc"], a["link"], a["img"])
-                cache.add(a["link"]); time.sleep(8)
+                cache.add(a["link"])
+                time.sleep(8)
             except Exception as e:
                 print("[ERROR] Telegram:", e)
 
