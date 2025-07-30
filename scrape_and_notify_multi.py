@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix4”
+Versión “medias24 v4-lite-fix5”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Elimina líneas ‘Le dd/mm/yyyy…’ y enlaces markdown en descripción
-• SIN tarjeta de preview de Telegram
-• Si es posible adjunta la imagen og:image del artículo
+• Sin tarjeta-preview; intenta mandar og:image como foto
 """
 
 import hashlib, json, os, re, tempfile, time, urllib.parse, requests
-from datetime   import datetime, timedelta
+from datetime   import datetime, timedelta, timezone
 from pathlib    import Path
 from typing     import Dict, List
-from bs4        import BeautifulSoup          # noqa: F401 (reserva futuro)
+from bs4        import BeautifulSoup                               # noqa: F401
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
@@ -26,14 +24,14 @@ TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
 TMP_DIR.mkdir(exist_ok=True)
 
-TODAY = datetime.utcnow().date()
+TODAY = datetime.now(timezone.utc).date()
 ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 
 # ─────────── HTTP helpers ────────── #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix4)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix5)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -68,12 +66,17 @@ def _norm_img(url:str)->str:
     return urlunsplit((sch, net, quote(path, safe='/%'),
                        quote_plus(query, safe='=&'), frag))
 
+def _fix_scheme(url:str) -> str:
+    """Añade https: si la URL empieza por //"""
+    return ("https:" + url) if url.startswith("//") else url
+
 def _find_og_image(url:str) -> str:
-    """Intenta localizar <meta property="og:image" …> en el artículo."""
     try:
         html = _safe_get(url, timeout=8).text
-        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
-        return m.group(1) if m else ""
+        m = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            html, re.I)
+        return _fix_scheme(m.group(1)) if m else ""
     except Exception:
         return ""
 
@@ -81,19 +84,15 @@ def _send(title:str, desc:str, link:str, img:str|None):
     caption = _mk_msg(title, desc, link)[:1024]
     body    = _mk_msg(title, desc, link)[:4096]
 
-    # ── 1) aseguramos una imagen si es posible ──────────────────────────
-    img_to_use = img or _find_og_image(link)
+    img_to_use = _fix_scheme(img) if img else _find_og_image(link)
 
-    # ── 2) intentamos enviar foto + caption ─────────────────────────────
     if img_to_use:
         try:
-            _session().head(img_to_use, timeout=5).raise_for_status()
-            safe = _norm_img(img_to_use)
             _session().post(
                 f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                 json={
                     "chat_id": TG_CHAT,
-                    "photo": safe,
+                    "photo": _norm_img(img_to_use),
                     "caption": caption,
                     "parse_mode": "MarkdownV2"
                 },
@@ -101,9 +100,8 @@ def _send(title:str, desc:str, link:str, img:str|None):
             ).raise_for_status()
             return
         except Exception:
-            pass   # si falla, cae al mensaje plano
+            pass   # Si falla, cae al mensaje texto
 
-    # ── 3) mensaje solo-texto SIN preview ───────────────────────────────
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
         json={
@@ -137,8 +135,7 @@ def _parse_medias24(md: str) -> List[Dict]:
             d, mn, y = m.groups()
             pdate = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            link_line = lines[i + 1]
-            m2 = _PAT_LINK.match(link_line)
+            m2 = _PAT_LINK.match(lines[i + 1])
             if m2:
                 title, link = m2.groups()
                 desc = ""
@@ -157,7 +154,7 @@ def _parse_medias24(md: str) -> List[Dict]:
                     "title": title,
                     "desc":  desc,
                     "link":  link,
-                    "img":   "",          # se completará en _send
+                    "img":   "",
                     "pdate": pdate,
                 })
             i += 2
