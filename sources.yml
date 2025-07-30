@@ -52,3 +52,18 @@
   date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
   month_map: *fr_months
 
+# ───────────── Médias24 – LeBoursier / Actus ─────────────
+- name: medias24_leboursier
+  list_url: "https://medias24.com/categorie/leboursier/actus/"
+  base_url: "https://medias24.com"
+  selectors:
+    # 1. la “grande” une   2. los demás artículos
+    container: "div.second-block, div.recent-post-info"
+    headline:  "h1 a"
+    link_attr: "href"
+    description: "div.description-actus-image, div.description-recent a"
+    image: "div.home-actus-image img::attr(src), span.recent-post-info-img img::attr(src)"
+    date:  "span.date-post"
+  # «| Le 29/7/2025 à 15:32»
+  date_regex: "Le\\s*(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})"
+
