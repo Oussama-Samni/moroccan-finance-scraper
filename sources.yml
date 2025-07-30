@@ -1,6 +1,6 @@
 # Médias24 – LeBoursier
 - name: medias24_leboursier
-  list_url: "https://medias24.com/categorie/leboursier/actus/feed/"
+  list_url: "https://medias24.com/categorie/leboursier/feed/"
   base_url: "https://medias24.com"
   selectors:
     container: "item"
