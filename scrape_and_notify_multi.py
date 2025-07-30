@@ -57,10 +57,17 @@ def _escape_md(t:str)->str:
     return re.sub(f"([{re.escape(_MD_SPECIAL)}])", r"\\\1", t)
 
 def _build_msg(head:str, desc:str, link:str)->str:
-    parts=[f"*{_escape_md(head)}*", "", _escape_md(desc), "",
-           f"[Lire l’article complet]({_escape_md(link)})", "",
-           "@MorrocanFinancialNews"]
-    return "\n".join(p for p in parts if p.strip())
+    """Devuelve el bloque con líneas en blanco fijas entre secciones."""
+    head = _escape_md(head)
+    desc = _escape_md(desc)
+    link = _escape_md(link)
+    # Usamos '\n\n' explícito para forzar la línea vacía
+    return (
+        f"*{head}*"
+        f"\n\n{desc}"
+        f"\n\n[Lire l’article complet]({link})"
+        f"\n\n@MorrocanFinancialNews"
+    )
 
 def _truncate(text:str, limit:int)->str:
     return text if len(text)<=limit else text[:limit-1]+"…"
@@ -74,28 +81,35 @@ def _norm_img_url(url:str)->str:
                                     safe_path, safe_query, parsed.fragment))
 
 def _send_telegram(head:str, desc:str, link:str, img:str|None):
-    # 1) construye caption / mensaje
     caption=_truncate(_build_msg(head, desc, link), 1024)
     fullmsg=_truncate(_build_msg(head, desc, link), 4096)
 
-    # 2) intenta con foto (si hay)
     if img:
         try:
             img_head=requests.head(img, timeout=5)
             if img_head.ok and img_head.headers.get("Content-Type","").startswith("image/"):
                 safe=_norm_img_url(img)
-                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                    json={"chat_id":TG_CHAT, "photo":safe,
-                          "caption":caption, "parse_mode":"MarkdownV2"},
+                requests.post(
+                    f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                    json={
+                        "chat_id":TG_CHAT,
+                        "photo":safe,
+                        "caption":caption,
+                        "parse_mode":"MarkdownV2"
+                    },
                     timeout=10).raise_for_status()
                 return
         except Exception as e:
             print("[WARN] sendPhoto falló → fallback texto:", e)
 
-    # 3) texto puro
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id":TG_CHAT, "text":fullmsg,
-              "parse_mode":"MarkdownV2", "disable_web_page_preview":False},
+    requests.post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        json={
+            "chat_id":TG_CHAT,
+            "text":fullmsg,
+            "parse_mode":"MarkdownV2",
+            "disable_web_page_preview":False
+        },
         timeout=10).raise_for_status()
 
 # ─────────────── Parsing genérico ────────────── #
@@ -103,7 +117,7 @@ def _parse(src:Dict)->List[Dict]:
     soup=BeautifulSoup(fetch(src["list_url"]),"html.parser")
     sel=src["selectors"]; seen=set(); out=[]
     for bloc in soup.select(sel["container"]):
-        a=bloc.select_one(sel["headline"]); 
+        a=bloc.select_one(sel["headline"])
         if not a: continue
         title=a.get_text(strip=True)
         link=urljoin(src["base_url"], a.get(sel.get("link_attr","href"),""))
@@ -130,13 +144,18 @@ def _parse(src:Dict)->List[Dict]:
         parsed=""
         if (rx:=src.get("date_regex")) and raw_date and (m:=re.search(rx,raw_date)):
             if src.get("month_map"):
-                d,mon,y=m.groups(); mm=src["month_map"].get(mon); 
+                d,mon,y=m.groups(); mm=src["month_map"].get(mon)
                 if mm: parsed=f"{y}-{mm}-{int(d):02d}"
             else:
                 d,mn,y=m.groups(); parsed=f"{y}-{int(mn):02d}-{int(d):02d}"
 
-        out.append({"title":title,"desc":desc,"link":link,
-                    "img":img,"pdate":parsed or raw_date})
+        out.append({
+            "title":title,
+            "desc":desc,
+            "link":link,
+            "img":img,
+            "pdate":parsed or raw_date
+        })
     return out
 
 # ─────────────────── Main ──────────────────── #
