@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Medias24 (LeBoursier)  ➜  Telegram (@MorrocanFinancialNews)
-Versión “medias24 v3‑fixUnderline”
-----------------------------------
-· Usa jina.ai para sortear el 403, cachea markdown un día
-· Escapa Markdown V2 y normaliza URLs de imagen
-· Caption ≤ 1 024 caracteres  ·  Mensaje ≤ 4 096
+Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
+Versión “medias24 v4”
+────────────────────────────────────────────────────────
+• Zona horaria Africa/Casablanca (pytz)
+• Envía artículos de hoy / ayer / ante-ayer (últimos 3 días)
+• Normaliza URLs de imagen, escapa Markdown V2, caption ≤ 1 024
 """
 
-import json, os, re, time, hashlib, tempfile, urllib.parse, requests
-from datetime import date
+import json, os, re, time, hashlib, tempfile, urllib.parse, requests, yaml, pytz
+from datetime import datetime, timedelta, date
 from pathlib   import Path
 from typing    import Dict, List
 from bs4       import BeautifulSoup
@@ -18,18 +18,22 @@ from urllib3.util.retry import Retry
 from urllib.parse import urljoin, urlsplit, urlunsplit, quote, quote_plus
 
 # ───────────── Configuración ───────────── #
-SRC_NAME   = "medias24_leboursier"
+SRC_FILE   = "sources.yml"
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
-TMP_DIR.mkdir(exist_ok=True, parents=True)
+TMP_DIR.mkdir(exist_ok=True)
+
+TZ = pytz.timezone("Africa/Casablanca")
+TODAY_CASABLANCA = datetime.now(TZ).date()
+ALLOWED_DATES = { (TODAY_CASABLANCA - timedelta(days=i)).isoformat() for i in range(3) }
 
 # ---------- HTTP helpers ---------- #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -60,106 +64,104 @@ def _msg(title:str, desc:str, link:str) -> str:
     ])
 
 def _norm_img(url:str)->str:
-    sch,net,path,query,frag=urlsplit(url)
+    sch,net,path,query,frag = urlsplit(url)
     return urlunsplit((sch,net,quote(path,safe='/%'),quote_plus(query,safe='=&'),frag))
 
 def _send(title:str, desc:str, link:str, img:str|None):
-    caption = _msg(title,desc,link)[:1024]
-    body    = _msg(title,desc,link)[:4096]
+    caption = _msg(title, desc, link)[:1024]
+    body    = _msg(title, desc, link)[:4096]
+
     if img:
         try:
-            _session().head(img,timeout=5).raise_for_status()
-            safe=_norm_img(img)
-            _session().post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                json={"chat_id":TG_CHAT,"photo":safe,
-                      "caption":caption,"parse_mode":"MarkdownV2"},
-                timeout=10).raise_for_status()
+            _session().head(img, timeout=5).raise_for_status()
+            safe = _norm_img(img)
+            _session().post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                json={
+                    "chat_id": TG_CHAT,
+                    "photo": safe,
+                    "caption": caption,
+                    "parse_mode": "MarkdownV2",
+                },
+                timeout=10
+            ).raise_for_status()
             return
-        except Exception: 
-            pass
-    _session().post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id":TG_CHAT,"text":body,"parse_mode":"MarkdownV2"},
-        timeout=10).raise_for_status()
+        except Exception:
+            pass  # fallback a texto
+
+    _session().post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        json={
+            "chat_id": TG_CHAT,
+            "text": body,
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": False,
+        },
+        timeout=10
+    ).raise_for_status()
 
 # ---------- Cache ---------- #
 def _load_cache()->set[str]:
     return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
-def _save_cache(c:set): 
-    CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=False,indent=2))
+def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
 # ────────────── Medias24 parser ────────────── #
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-
-def _parse_markdown(md:str)->List[Dict]:
-    """Extrae lista de artículos (título, link, fecha, descripción) del markdown jina.ai"""
-    lines = md.splitlines()
+def _parse_medias24(markdown:str)->List[Dict]:
+    lines = markdown.splitlines()
     out:List[Dict] = []
     i=0
     while i < len(lines):
         m = _PAT_HEADER.match(lines[i])
         if m and i+1 < len(lines):
             d,mn,y = m.groups()
-            parsed = f"{y}-{int(mn):02d}-{int(d):02d}"
+            date_parsed = f"{y}-{int(mn):02d}-{int(d):02d}"
             m2 = _PAT_LINK.match(lines[i+1])
             if m2:
                 title, link = m2.groups()
                 desc = ""
-                j = i + 2
-                while j < len(lines):
-                    txt = lines[j].strip()
-                    # --- filtros de líneas que NO son descripción ---------------- #
-                    if (
-                        not txt                             # vacía
-                        or txt.startswith("![")            # imagen
-                        or _PAT_LINK.match(txt)            # otro link
-                        or re.fullmatch(r"[=\- ]{3,}", txt)  # ### FIX: subrayados =====
-                    ):
-                        j += 1
-                        continue
-                    desc = re.sub(r"\s+", " ", txt).strip(" …")
-                    break
+                j=i+2
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                if j < len(lines):
+                    desc = re.sub(r"\s+", " ", lines[j]).strip(" …")
                 out.append({"title":title,
                             "desc":desc,
                             "link":link,
                             "img":"",
-                            "pdate":parsed})
+                            "pdate":date_parsed})
             i += 2
         else:
             i += 1
     return out
 
-def _fetch_markdown() -> str:
+def fetch_medias24() -> str:
     url_html = "http://medias24.com/categorie/leboursier/actus/"
     cache    = TMP_DIR / (hashlib.md5(url_html.encode()).hexdigest()+".md")
-    today_key = date.today().isoformat()
-    if cache.exists() and cache.stem.endswith(today_key):
+
+    # usa cache diaria
+    if cache.exists() and datetime.fromtimestamp(cache.stat().st_mtime, TZ).date() == TODAY_CASABLANCA:
         return cache.read_text(encoding="utf-8")
 
     print("[DEBUG] downloading via jina.ai")
     url_jina = f"https://r.jina.ai/http://{url_html.lstrip('http://').lstrip('https://')}"
     md = _safe_get(url_jina, timeout=15).text
-    # re‑nombre el archivo con la fecha para invalidar caché diaria
-    cache.unlink(missing_ok=True)
-    cache = cache.with_stem(cache.stem.split('.')[0] + today_key)
     cache.write_text(md, encoding="utf-8")
     return md
 
 # ───────────── Main ───────────── #
 def main() -> None:
-    today = date.today().isoformat()
-    # -------- durante la prueba queremos incluir AYER también -------- #
-    yesterday = (date.today()).isoformat()  # ← cambia .isoformat() a str(today - 1) si lo necesitas
     cache = _load_cache()
+    print("— medias24_leboursier —")
 
-    print(f"— {SRC_NAME} —")
     try:
-        md   = _fetch_markdown()
-        arts = _parse_markdown(md)
+        md   = fetch_medias24()
+        arts = _parse_medias24(md)
     except Exception as e:
-        print("[ERROR] Medias24:", e)
-        arts = []
+        print("[ERROR] Medias24:", e); arts = []
 
+    # Debug
     print("DEBUG – lista completa parseada:")
     for a in arts:
         print(" •", a["title"][:70], "| pdate:", a["pdate"])
@@ -168,8 +170,9 @@ def main() -> None:
     for a in arts:
         if a["link"] in cache:
             continue
-        if a["pdate"] not in {today, yesterday}:   # ↞ permite ayer y hoy
+        if a["pdate"] not in ALLOWED_DATES:
             continue
+
         try:
             print(" Enviando:", a["title"][:60])
             _send(a["title"], a["desc"], a["link"], a["img"])
