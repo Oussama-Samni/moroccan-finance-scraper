@@ -1,15 +1,25 @@
-# Médias24 – LeBoursier
+# Médias24 – LeBoursier
 - name: medias24_leboursier
   list_url: "https://medias24.com/categorie/leboursier/actus/feed/"
   base_url: "https://medias24.com"
   selectors:
     container: "item"
-    headline:  "title"
+    headline: "title"
     link_attr: "link"
     description: "description"
-    image: ""                 # el RSS no trae miniatura
+    image: ""            # el RSS no trae miniatura
     date: "pubDate"
-  date_regex: "(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})"
+  date_regex: '(\\d{1,2})\\s+(\\w{3})\\s+(\\d{4})'
   month_map:
-    Jan: "01"; Feb: "02"; Mar: "03"; Apr: "04"; May: "05"; Jun: "06"
-    Jul: "07"; Aug: "08"; Sep: "09"; Oct: "10"; Nov: "11"; Dec: "12"
+    Jan: "01"
+    Feb: "02"
+    Mar: "03"
+    Apr: "04"
+    May: "05"
+    Jun: "06"
+    Jul: "07"
+    Aug: "08"
+    Sep: "09"
+    Oct: "10"
+    Nov: "11"
+    Dec: "12"
