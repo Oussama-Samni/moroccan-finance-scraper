@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Finances News, L’Economiste (Économie) y EcoActu (Économie Nationale) → Telegram
--------------------------------------------------------------------------------
-Baseline robusto v1.2
+Finances News, L’Economiste (Économie), EcoActu (Économie Nationale)
+y Médias24 (LeBoursier / Actus) → Telegram (@MorrocanFinancialNews)
+-------------------------------------------------------------------
+Baseline robusto v1.3
 • Normaliza URLs de imagen antes de sendPhoto
 • Escapa TODOS los caracteres especiales de Markdown V2
 • Caption ≤ 1 024 caracteres · Mensaje ≤ 4 096
@@ -29,7 +30,7 @@ def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": (
-            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.2; "
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.3; "
             "+https://github.com/OussamaSamni/moroccan-finance-scraper)"
         ),
         "Accept-Language": "fr,en;q=0.8",
@@ -74,7 +75,7 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 def _norm_img_url(url: str) -> str:
-    """Escapa (), espacios y UTF‑8 en ruta/ query, deja esquema/host como están."""
+    """Escapa (), espacios y UTF‑8 en ruta / query, deja esquema / host intactos."""
     sch, net, path, query, frag = urlsplit(url)
     return urlunsplit(
         (
@@ -203,7 +204,12 @@ def main():
     cache = _load_cache()
     sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
 
-    ACTIVE = {"financesnews", "leconomiste_economie", "ecoactu_nationale"}
+    ACTIVE = {
+        "financesnews",
+        "leconomiste_economie",
+        "ecoactu_nationale",
+        "medias24_leboursier",    # ← nueva fuente
+    }
 
     for src in sources:
         if src["name"] not in ACTIVE:
