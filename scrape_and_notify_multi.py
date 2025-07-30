@@ -1,14 +1,8 @@
 """
-Scraper → Telegram (@MorrocanFinancialNews)
-==========================================
-
-Fuentes actuales
-  • FinancesNews      – https://fnh.ma/articles/actualite-financiere-maroc
-  • L’Economiste Eco  – https://www.leconomiste.com/categorie/Economie
-
-Añadir nuevas fuentes:
-  1) Bloque en sources.yml
-  2) Si hace falta lógica extra, tocar `_postprocess()` o `_meta_description()`
+Finances News → Telegram (@MorrocanFinancialNews)
+-------------------------------------------------
+Añadir nuevas fuentes ⇒ bloque en sources.yml y, si hace falta,
+ajuste puntual en _postprocess().
 """
 
 import json, os, re, time, urllib.parse, requests, yaml
@@ -36,11 +30,9 @@ def _session() -> requests.Session:
         ),
         "Accept-Language": "fr,en;q=0.8",
     })
-    retry = Retry(
-        total=4, backoff_factor=1,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(["GET", "HEAD"])
-    )
+    retry = Retry(total=4, backoff_factor=1,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(["GET","HEAD"]))
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
@@ -61,62 +53,69 @@ def _save_cache(cache: set) -> None:
 
 # ───────────────────── Telegram ───────────────────── #
 def _escape_md(text: str) -> str:
+    """Escapa todo para Markdown V2 (por si hay caracteres raros)."""
     return re.sub(r"([_*[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
 
-def _send_telegram(head: str, desc: str, link: str,
-                   image_url: str | None = None) -> None:
-    msg = "\n".join(filter(None, [
-        f"*{_escape_md(head)}*",
+def _compose_caption(a: Dict, source_tag: str) -> str:
+    """
+    Devuelve el bloque de texto con el formato:
+        Titular
+        dd Mois aaaa - par <fuente>
+        (línea en blanco)
+        Descripción
+        (línea en blanco)
+        Lire l’article complet
+        (línea en blanco)
+        @MorrocanFinancialNews
+    """
+    date_line = ""
+    if a.get("raw_date"):
+        date_line = f"\n{_escape_md(a['raw_date'])} - par {_escape_md(source_tag)}"
+
+    parts = [
+        f"{_escape_md(a['title'])}{date_line}",
         "",
-        _escape_md(desc),
+        _escape_md(a['desc']),
         "",
-        f"[Lire l’article complet]({_escape_md(link)})",
+        f"[Lire l’article complet]({_escape_md(a['link'])})",
         "",
         "@MorrocanFinancialNews"
-    ]))
+    ]
+    return "\n".join(parts)
 
-    if image_url:
+def _send_telegram(a: Dict, source_tag: str) -> None:
+    caption = _compose_caption(a, source_tag)
+
+    # ── Imagen (si la hay y es válida) ──────────────────────────
+    if a["img"]:
         try:
-            img_ok = requests.head(image_url, timeout=5)
-            if img_ok.ok and img_ok.headers.get("Content-Type", "").startswith("image/"):
+            head = requests.head(a["img"], timeout=5)
+            if head.ok and head.headers.get("Content-Type","").startswith("image/"):
                 requests.post(
                     f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                     json={
                         "chat_id": TG_CHAT,
-                        "photo": image_url,
-                        "caption": msg,
+                        "photo": a["img"],
+                        "caption": caption,
                         "parse_mode": "MarkdownV2",
                     },
                     timeout=10,
                 ).raise_for_status()
                 return
         except Exception as e:
-            print("[WARN] imagen falló, envío texto:", e)
+            print("[WARN] imagen falló, envío solo texto:", e)
 
-    # Fallback texto
+    # ── Fallback texto ──────────────────────────────────────────
     requests.post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
         json={
             "chat_id": TG_CHAT,
-            "text": msg,
+            "text": caption,
             "parse_mode": "MarkdownV2",
             "disable_web_page_preview": False,
         },
         timeout=10,
     ).raise_for_status()
-
-# ───────────── helpers específicos ───────────── #
-def _meta_description(url: str) -> str:
-    """Extrae og:description para listados sin snippet (L’Economiste)."""
-    try:
-        html = fetch(url, 8)
-        m = re.search(
-            r'<meta property="og:description"\s+content="([^"]+)"',
-            html, re.I
-        )
-        return m.group(1).strip() if m else ""
-    except Exception:
-        return ""
 
 # ───────────────── Parsing genérico ───────────────── #
 def _parse(src: Dict) -> List[Dict]:
@@ -124,7 +123,7 @@ def _parse(src: Dict) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
     sel  = src["selectors"]
 
-    seen_links: set[str] = set()     # evita duplicados FinancesNews
+    seen_links: set[str] = set()
     arts: List[Dict] = []
 
     for bloc in soup.select(sel["container"]):
@@ -133,10 +132,7 @@ def _parse(src: Dict) -> List[Dict]:
             continue
         title = a.get_text(strip=True)
         href  = urljoin(src["base_url"], a.get(sel.get("link_attr", "href"), ""))
-        if not href:
-            continue
-
-        if src["name"] == "financesnews" and href in seen_links:
+        if not href or href in seen_links:
             continue
         seen_links.add(href)
 
@@ -145,9 +141,6 @@ def _parse(src: Dict) -> List[Dict]:
             d = bloc.select_one(sel["description"])
             if d:
                 desc = d.get_text(strip=True)
-        # fallback meta‑description para L’Economiste
-        if not desc and src["name"].startswith("leconomiste"):
-            desc = _meta_description(href)
 
         img_url = ""
         if sel.get("image"):
@@ -165,15 +158,14 @@ def _parse(src: Dict) -> List[Dict]:
         parsed = ""
         rx = src.get("date_regex")
         if rx and raw_date and (m := re.search(rx, raw_date)):
-            if src.get("month_map"):           # FinancesNews (fr)
-                dd, mon, yy = m.groups()
+            if src.get("month_map"):
+                day, mon, yr = m.groups()
                 mm = src["month_map"].get(mon)
                 if mm:
-                    parsed = f"{yy}-{mm}-{int(dd):02d}"
-            else:                              # L’Economiste numérico
-                dd, mm, yy = m.groups()
-                yy = yy if len(yy) == 4 else "20" + yy   # 25 → 2025
-                parsed = f"{yy}-{int(mm):02d}-{int(dd):02d}"
+                    parsed = f"{yr}-{mm}-{int(day):02d}"
+            else:
+                d1, m1, y1 = m.groups()
+                parsed = f"{y1}-{int(m1):02d}-{int(d1):02d}"
 
         arts.append({
             "title": title,
@@ -181,6 +173,7 @@ def _parse(src: Dict) -> List[Dict]:
             "link":  href,
             "img":   img_url,
             "pdate": parsed or raw_date,
+            "raw_date": raw_date,      # ⇦ necesario para la línea de fecha
         })
     return arts
 
@@ -188,40 +181,38 @@ def _parse(src: Dict) -> List[Dict]:
 def main() -> None:
     today  = date.today().isoformat()
     cache  = _load_cache()
-    sources = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
+    config = yaml.safe_load(open(SRC_FILE, encoding="utf-8"))
 
-    # limitar a las fuentes actualmente soportadas
-    valid_sources = {"financesnews", "leconomiste_economie"}
+    for src in config:
+        if src["name"] not in {"financesnews", "leconomiste_economie"}:
+            continue            # de momento trabajamos con estas dos
 
-    for src in sources:
-        if src["name"] not in valid_sources:
-            continue
-
+        tag = src["name"].replace("_", " ")   # ejemplo: leconomiste_economie → leconomiste economie
         print(f"— {src['name']} —")
-        arts_all = _parse(src)
 
-        # DEBUG
+        arts = _parse(src)
+
+        # DEBUG: lista completa
         print("\nDEBUG – lista completa parseada:")
-        for a in arts_all:
+        for a in arts:
             print(" •", a["title"][:70], "| pdate:", a["pdate"])
         print("------------------------------------------------\n")
 
-        for art in arts_all:
-            if art["link"] in cache:
+        for art in arts:
+            if art["link"] in cache:           # ya enviado
                 continue
             if art["pdate"] and art["pdate"] != today:
-                continue
+                continue                       # no es de hoy
 
             print(" Enviando:", art["title"][:60])
             try:
-                _send_telegram(art["title"], art["desc"], art["link"], art["img"])
+                _send_telegram(art, tag)
                 cache.add(art["link"])
                 time.sleep(8)
             except Exception as e:
                 print("[ERROR] Telegram:", e)
 
     _save_cache(cache)
-
 
 if __name__ == "__main__":
     main()
