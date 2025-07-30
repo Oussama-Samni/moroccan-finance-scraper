@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix5”
+Versión “medias24 v4-lite-fix6”
 ────────────────────────────────────────────────────────
-• Envía artículos de los últimos 3 días (hoy,-1,-2)
+• Últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Sin tarjeta-preview; intenta mandar og:image como foto
+• Omite cabeceras tipo “Marché de change”
+• Fallback: og:description + descarga y re-envío de og:image
 """
 
-import hashlib, json, os, re, tempfile, time, urllib.parse, requests
+import hashlib, json, os, re, tempfile, time, requests
 from datetime   import datetime, timedelta, timezone
 from pathlib    import Path
 from typing     import Dict, List
-from bs4        import BeautifulSoup                               # noqa: F401
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
+from urllib.parse import (
+    urlsplit, urlunsplit, quote, quote_plus, urljoin,
+)
 
 # ───────────── Config ───────────── #
 CACHE_FILE = Path("sent_articles.json")
@@ -31,7 +33,7 @@ ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix5)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix6)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -61,46 +63,32 @@ def _mk_msg(title:str, desc:str, link:str) -> str:
         "@MorrocanFinancialNews"
     ])
 
+def _fix_scheme(url:str)->str:
+    return "https:" + url if url.startswith("//") else url
+
 def _norm_img(url:str)->str:
     sch, net, path, query, frag = urlsplit(url)
     return urlunsplit((sch, net, quote(path, safe='/%'),
                        quote_plus(query, safe='=&'), frag))
 
-def _fix_scheme(url:str) -> str:
-    """Añade https: si la URL empieza por //"""
-    return ("https:" + url) if url.startswith("//") else url
-
-def _find_og_image(url:str) -> str:
-    try:
-        html = _safe_get(url, timeout=8).text
-        m = re.search(
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-            html, re.I)
-        return _fix_scheme(m.group(1)) if m else ""
-    except Exception:
-        return ""
-
-def _send(title:str, desc:str, link:str, img:str|None):
+def _send(title:str, desc:str, link:str, img_url:str|None):
     caption = _mk_msg(title, desc, link)[:1024]
     body    = _mk_msg(title, desc, link)[:4096]
 
-    img_to_use = _fix_scheme(img) if img else _find_og_image(link)
-
-    if img_to_use:
+    img_url = _fix_scheme(img_url) if img_url else _find_meta(link, "og:image")
+    if img_url:
         try:
+            # descarga local
+            data = _safe_get(img_url, timeout=10).content
+            files = {"photo": ("img.jpg", data)}
             _session().post(
                 f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                json={
-                    "chat_id": TG_CHAT,
-                    "photo": _norm_img(img_to_use),
-                    "caption": caption,
-                    "parse_mode": "MarkdownV2"
-                },
-                timeout=10
-            ).raise_for_status()
+                data={"chat_id": TG_CHAT, "caption": caption,
+                      "parse_mode": "MarkdownV2"},
+                files=files, timeout=15).raise_for_status()
             return
-        except Exception:
-            pass   # Si falla, cae al mensaje texto
+        except Exception as e:
+            print("[WARN] foto falla → texto", e)
 
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -116,45 +104,57 @@ def _send(title:str, desc:str, link:str, img:str|None):
 # ───────────── Cache ───────────── #
 def _load_cache()->set[str]:
     return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
-def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
+def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), indent=2, ensure_ascii=False))
 
 # ──────── Medias24 specific ─────── #
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 _PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
+_PAT_SECTION= re.compile(r"^[A-ZÉÈÀÂÂÎÔÛÇ][a-zéèàâêîôûç]+(?:\s+[a-zéèàâêîôûç]+)?$")
+
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+def _find_meta(url:str, prop:str) -> str:
+    try:
+        html = _safe_get(url, timeout=8).text
+        m = re.search(rf'<meta[^>]+property=["\']{prop}["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+        return _fix_scheme(m.group(1)) if m else ""
+    except Exception:
+        return ""
 
 def _parse_medias24(md: str) -> List[Dict]:
     lines = md.splitlines()
     out: List[Dict] = []
     i = 0
     while i < len(lines):
-        m = _PAT_HEADER.match(lines[i])
-        if m and i + 1 < len(lines):
+        if (m := _PAT_HEADER.match(lines[i])) and i + 1 < len(lines):
             d, mn, y = m.groups()
             pdate = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            m2 = _PAT_LINK.match(lines[i + 1])
-            if m2:
+            if (m2 := _PAT_LINK.match(lines[i + 1])):
                 title, link = m2.groups()
                 desc = ""
                 j = i + 2
                 while j < len(lines):
                     txt = lines[j].strip()
-                    if (not txt
-                        or re.fullmatch(r"=+", txt)
+                    if (not txt or re.fullmatch(r"=+", txt)
                         or _PAT_DATE.match(txt)
-                        or _PAT_LINK.match(txt)):
-                        j += 1; continue
+                        or _PAT_LINK.match(txt)
+                        or _PAT_SECTION.match(txt)):        # ← descarta “La bourse”…
+                        j += 1
+                        continue
                     desc = _strip_md_links(re.sub(r"\s+", " ", txt)).strip(" …")
                     break
+
+                if not desc:                               # fallback a og:description
+                    desc = _find_meta(link, "og:description")
 
                 out.append({
                     "title": title,
                     "desc":  desc,
                     "link":  link,
-                    "img":   "",
+                    "img":   "",         # la buscamos luego
                     "pdate": pdate,
                 })
             i += 2
