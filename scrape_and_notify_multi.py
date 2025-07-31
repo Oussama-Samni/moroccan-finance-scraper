@@ -6,8 +6,8 @@ Versión “medias24 v4-lite-fix7”
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
 • Salto de línea tras el primer “:”
-• Filtra tablas markdown, líneas-etiqueta genéricas y *cualquier* fecha
-• Desactiva siempre la vista previa de enlaces
+• Filtra tablas markdown y etiquetas genéricas (robusto a espacios/NBSP)
+• Vista previa de enlaces desactivada
 """
 
 import hashlib, json, os, re, tempfile, time, requests
@@ -98,29 +98,33 @@ def _load_cache()->set[str]:
 def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=False,indent=2))
 
 # ──────── Medias24 parser ─────── #
-PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
-PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-DATE_RE    = re.compile(r"^\s*(?:le\s+)?\d{1,2}[/-]\d{1,2}[/-]\d{4}", re.I)
+_PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
+_PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
 
-SKIP_TAGS  = {
+SKIP_TAGS = {
     "marché de change", "la séance du jour", "la bourse",
-    "masi pts", "journée du", "variations valeur par valeur",
+    "masi pts", "variations valeur par valeur", "journée du",  # palabras problemáticas
 }
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+def _normalize(txt:str) -> str:
+    # lower + colapsa espacios (incluye NBSP \u00A0) a uno solo
+    return re.sub(r"\s+", " ", txt.lower()).strip()
 
 def _parse_medias24(md:str) -> List[dict]:
     lines = md.splitlines()
     out   : List[dict] = []
     i = 0
     while i < len(lines):
-        m = PAT_HEADER.match(lines[i])
+        m = _PAT_HEADER.match(lines[i])
         if m and i+1 < len(lines):
             d,mn,y = m.groups()
             pdate  = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            m2 = PAT_LINK.match(lines[i+1])
+            m2 = _PAT_LINK.match(lines[i+1])
             if m2:
                 title, link = m2.groups()
 
@@ -128,13 +132,13 @@ def _parse_medias24(md:str) -> List[dict]:
                 j = i+2
                 while j < len(lines):
                     raw = lines[j].strip()
-                    low = raw.lower()
+                    norm = _normalize(raw)
                     if (not raw or
                         raw.startswith("|") or raw.count("|")>=2 or
                         re.fullmatch(r"=+", raw) or
-                        DATE_RE.match(raw) or
-                        PAT_LINK.match(raw) or
-                        any(low.startswith(tag) for tag in SKIP_TAGS)):
+                        _PAT_DATE.match(raw) or
+                        _PAT_LINK.match(raw) or
+                        any(norm.startswith(tag) for tag in SKIP_TAGS)):
                         j += 1; continue
                     desc = _strip_md_links(re.sub(r"\s+"," ",raw)).strip(" …")
                     break
