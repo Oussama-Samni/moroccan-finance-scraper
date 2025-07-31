@@ -7,11 +7,7 @@ Versión “medias24 v4-lite-fix6”
 • Sin dependencias externas
 • Salto de línea tras el primer “:”
 • Filtra tablas markdown y líneas-etiqueta genéricas
-• Desactiva vista previa de enlaces
-• Ignora:
-    - «Journée du dd-mm-aaaa»
-    - líneas que sean solo «dd-mm-aaaa»
-    - «MASI Pts» (con o sin espacios extra, con o sin tildes)
+• Vista previa de enlaces desactivada
 """
 
 import hashlib, json, os, re, tempfile, time, unicodedata, requests
@@ -22,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ──────────── Config ──────────── #
+# ─────────── Config ─────────── #
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
@@ -49,24 +45,20 @@ def _session() -> requests.Session:
 def _safe_get(url:str, **kw) -> requests.Response:
     r = _session().get(url, **kw); r.raise_for_status(); return r
 
-# ───────── Telegram ────────── #
+# ───────── Telegram ───────── #
 _SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
 def _esc(t:str) -> str: return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
 
 def _newline_title(t:str) -> str:
-    """Inserta un salto de línea tras el primer ':' (si existe)."""
     return re.sub(r"\s*:\s*", ":\n", t, count=1)
 
 def _mk_msg(title:str, desc:str, link:str) -> str:
-    return "\n".join([
+    return "\n".join(filter(None, [
         f"*{_esc(_newline_title(title))}*",
-        "",
         _esc(desc),
-        "",
         f"[Lire l’article complet]({_esc(link)})",
-        "",
         "@MorrocanFinancialNews",
-    ])
+    ]))
 
 def _norm_img(url:str)->str:
     sch, net, path, query, frag = urlsplit(url)
@@ -88,7 +80,7 @@ def _send(title:str, desc:str, link:str, img:str|None):
                 timeout=10).raise_for_status()
             return
         except Exception:
-            pass  # fallback texto
+            pass   # fallback texto
 
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -105,25 +97,20 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=Fa
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 _PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
-_RE_BARE_DATE = re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")
-_RE_JOURNEE   = re.compile(r"^journee du \d{1,2}-\d{1,2}-\d{4}$")
 
-def _no_accents(text:str)->str:
-    return ''.join(c for c in unicodedata.normalize('NFD', text)
-                   if unicodedata.category(c) != 'Mn')
+def _norm_line(txt:str) -> str:
+    return unicodedata.normalize("NFKD", txt).encode("ascii","ignore").decode().lower()
 
 _SKIP_TAGS = {
-    "marché de change", "la séance du jour", "la bourse", "masi pts",
+    "marche de change",
+    "la seance du jour",
+    "la bourse",
+    "masi pts",
+    "variations valeur par valeur",
 }
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-
-def _norm_line(txt:str)->str:
-    """Minúsculas, sin tildes, un solo espacio."""
-    no_acc = _no_accents(txt)
-    one_sp = re.sub(r"\s+", " ", no_acc).strip()
-    return one_sp.lower()
 
 def _parse_medias24(md:str) -> List[dict]:
     lines = md.splitlines()
@@ -144,22 +131,17 @@ def _parse_medias24(md:str) -> List[dict]:
                 while j < len(lines):
                     raw = lines[j].strip()
                     norm = _norm_line(raw)
-
                     if (not raw or
                         raw.startswith("|") or raw.count("|")>=2 or
                         re.fullmatch(r"=+", raw) or
                         _PAT_DATE.match(raw) or
                         _PAT_LINK.match(raw) or
-                        norm in _SKIP_TAGS or
-                        _RE_BARE_DATE.match(norm) or
-                        _RE_JOURNEE.match(norm)):
+                        norm in _SKIP_TAGS):
                         j += 1; continue
-
-                    desc = _strip_md_links(re.sub(r"\s+"," ", raw)).strip(" …")
+                    desc = _strip_md_links(re.sub(r"\s+"," ",raw)).strip(" …")
                     break
-
                 if not desc:
-                    desc = " "   # mantiene el salto
+                    desc = " "   # placeholder para mantener salto
 
                 out.append({"title":title,"desc":desc,"link":link,
                             "img":"","pdate":pdate})
