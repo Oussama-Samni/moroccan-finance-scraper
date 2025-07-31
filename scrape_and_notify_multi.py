@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v5-wpjson”
+Versión “medias24 v5-wpjson-today”
 ────────────────────────────────────────────────────────
-• Toma directamente el JSON de la API WordPress (categoría Actus, id 5877)
-• Envía solo los artículos de hoy y -2 días (3 días ventana)
-• Inserta salto de línea tras el primer “:”
-• Incluye imagen destacada si existe; si falla → texto sin vista previa
+• Consulta la API WordPress de Medias24 (categoría Actus, id 5877)
+• Envía **solo** las noticias publicadas hoy (fecha UTC)
+• Mantiene salto tras “:”, imagen destacada, cache de 15 min, etc.
 """
 
 import html, json, os, re, time, hashlib, tempfile, requests
-from datetime   import datetime, timedelta, timezone
+from datetime   import datetime, timezone
 from pathlib     import Path
 from typing      import List, Dict
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
@@ -24,11 +23,11 @@ TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
 TMP_DIR.mkdir(exist_ok=True)
 
-TODAY_UTC = datetime.now(timezone.utc).date()
-ALLOWED_DATES = {(TODAY_UTC - timedelta(days=i)).isoformat() for i in range(3)}
+TODAY_UTC = datetime.now(timezone.utc).date().isoformat()   # ← solo hoy
+ALLOWED_DATES = {TODAY_UTC}
 
-CAT_ID   = 5877                      # “Actus” dentro de LeBoursier
-API_URL  = f"https://medias24.com/wp-json/wp/v2/posts"
+CAT_ID   = 5877                                    # “Actus”
+API_URL  = "https://medias24.com/wp-json/wp/v2/posts"
 QUERY    = f"?categories={CAT_ID}&per_page=20&_embed"
 
 # ───────── HTTP ───────── #
@@ -109,9 +108,9 @@ def _save_cache(c: set):
     CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
 # ──────── Helpers ─────── #
-_TAG_RE = re.compile(r"<[^>]+>")              # strip HTML tags quickly
-def _strip_html(text: str) -> str:
-    return _TAG_RE.sub("", html.unescape(text)).strip()
+_TAG_RE = re.compile(r"<[^>]+>")
+def _clean_html(txt: str) -> str:
+    return _TAG_RE.sub("", html.unescape(txt)).strip()
 
 # ──────── Fetch & parse ─────── #
 def fetch_wp_json() -> List[Dict]:
@@ -127,13 +126,13 @@ def fetch_wp_json() -> List[Dict]:
 def _parse_items(items: List[Dict]) -> List[Dict]:
     out = []
     for post in items:
-        # fecha UTC
         pdate = post["date_gmt"][:10]
 
-        title = _strip_html(post["title"]["rendered"])
-        desc_raw = (post.get("yoast_head_json", {}) or {}).get("description") \
-                   or post.get("excerpt", {}).get("rendered", "")
-        desc = _strip_html(desc_raw) or " "           # dejar línea en blanco si vacío
+        title = _clean_html(post["title"]["rendered"])
+        desc = _clean_html(
+            (post.get("yoast_head_json") or {}).get("description")
+            or post.get("excerpt", {}).get("rendered", "")
+        ) or " "
 
         link = post["link"]
 
@@ -154,18 +153,17 @@ def main():
     try:
         arts = _parse_items(fetch_wp_json())
     except Exception as e:
-        print("[ERROR] Medias24:", e)
-        arts = []
+        print("[ERROR] Medias24:", e); arts = []
 
-    print("DEBUG – lista completa parseada:")
+    print("DEBUG – parseados:")
     for a in arts:
-        print(" •", a["title"][:70], "| pdate:", a["pdate"])
+        print(" •", a["title"][:70], "|", a["pdate"])
     print("------------------------------------------------\n")
 
     for a in arts:
-        if a["link"] in cache:
+        if a["pdate"] != TODAY_UTC:
             continue
-        if a["pdate"] not in ALLOWED_DATES:
+        if a["link"] in cache:
             continue
         try:
             print(" Enviando:", a["title"][:60])
