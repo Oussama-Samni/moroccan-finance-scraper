@@ -1,278 +1,211 @@
-import os
-import time
-import re
-import requests
-import json
+#!/usr/bin/env python3
+"""
+Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
+Versión “medias24 v5-img”
+────────────────────────────────────────────────────────
+• Envía artículos de los últimos 3 días
+• Filtra cabeceras/mini-secciones que ensuciaban la descripción
+• Obtiene y publica la imagen del artículo (og:image o primera <img>)
+"""
 
-from datetime import date
-from urllib.parse import urljoin
+import hashlib, json, os, re, tempfile, time, requests, urllib.parse
+from datetime   import datetime, timedelta
+from pathlib     import Path
+from typing      import Dict, List
+from bs4         import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from bs4 import BeautifulSoup
+from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 
-# ===== State files =====
-SENT_FILE = "sent_articles.json"
-FETCH_FAILURES_FILE = "fetch_failures.json"
-FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
+# ───────────── Config ───────────── #
+CACHE_FILE = Path("sent_articles.json")
+TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
+TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
+TMP_DIR.mkdir(exist_ok=True)
 
-# ===== Fetch failure tracking =====
+TODAY = datetime.utcnow().date()
+ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 
-def load_fetch_failures() -> int:
-    """Load current consecutive fetch failure count."""
-    try:
-        with open(FETCH_FAILURES_FILE, "r", encoding="utf-8") as f:
-            return int(json.load(f).get("count", 0))
-    except FileNotFoundError:
-        return 0
+# ─────────── HTTP helpers ────────── #
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.5-img; +https://t.me/MorrocanFinancialNews)"
+        ),
+        "Accept-Language": "fr,en;q=0.8",
+    })
+    retry = Retry(total=4, backoff_factor=1,
+                  status_forcelist=(429,500,502,503,504),
+                  allowed_methods=frozenset(["GET","HEAD"]))
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    s.mount("http://",  HTTPAdapter(max_retries=retry))
+    return s
 
-
-def save_fetch_failures(count: int) -> None:
-    """Save updated fetch failure count."""
-    with open(FETCH_FAILURES_FILE, "w", encoding="utf-8") as f:
-        json.dump({"count": count}, f)
-
-# ===== Sent URLs state =====
-
-def load_sent() -> set:
-    """
-    Load the set of URLs already sent *today*.
-    Supports legacy list format or new dict format with date scoping.
-    """
-    try:
-        with open(SENT_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return set()
-
-    if isinstance(data, list):
-        # Legacy format
-        return set(data)
-
-    if data.get("date") != date.today().isoformat():
-        return set()
-    return set(data.get("urls", []))
-
-
-def save_sent(urls: set) -> None:
-    """
-    Save today’s date and the list of sent URLs.
-    Always writes the new dict format.
-    """
-    payload = {
-        "date": date.today().isoformat(),
-        "urls": sorted(urls)
-    }
-    with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-# ===== HTTP fetching with retries =====
-
-def get_session(
-    total_retries: int = 5,
-    backoff_factor: float = 1.0,
-    status_forcelist: tuple = (429, 500, 502, 503, 504),
-    user_agent: str = "Mozilla/5.0 (compatible; FinanceScraper/1.0; +https://github.com/yourusername/moroccan-finance-scraper)"
-) -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": user_agent})
-    retry_strategy = Retry(
-        total=total_retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset(["GET", "POST"]),
-        raise_on_status=False,
-        respect_retry_after_header=True,
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-
-def fetch_url(url: str, timeout: float = 10.0) -> str:
-    """
-    Fetches the given URL with retry logic. Tracks consecutive failures
-    and re-raises on failure after logging.
-    """
-    try:
-        session = get_session()
-        resp = session.get(url, timeout=timeout)
-        resp.raise_for_status()
-    except Exception as e:
-        failures = load_fetch_failures() + 1
-        save_fetch_failures(failures)
-        print(f"ERROR: Fetch attempt failed ({failures}): {e}")
-        if failures >= FETCH_FAILURE_THRESHOLD:
-            save_fetch_failures(0)
-        raise
-
-    save_fetch_failures(0)
-    return resp.text
-
-# ===== Parsing HTML and dates =====
-
-BASE_URL = "https://boursenews.ma"
-MONTH_MAP = {
-    "Janvier": "01", "Février": "02", "Mars": "03", "Avril": "04",
-    "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08",
-    "Septembre": "09", "Octobre": "10", "Novembre": "11", "Décembre": "12"
-}
-
-
-def parse_date(date_text: str) -> str:
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b", date_text)
-    if not m:
-        return ""
-    day, mon_name, year = m.groups()
-    mon_num = MONTH_MAP.get(mon_name, "")
-    if not mon_num:
-        return ""
-    return f"{year}-{mon_num}-{int(day):02d}"
-
-
-def parse_articles(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    containers = soup.select("div.list_item.margin_top_30.margin_bottom_30 div.row")
-    articles = []
-    for c in containers:
-        a_tag = c.select_one("h3 a")
-        p_tag = c.select_one("p")
-        img_tag = c.select_one("img")
-        span_date = c.select_one("h3 a span")
-        if not (a_tag and img_tag and span_date):
-            continue
-
-        headline = a_tag.get_text(strip=True)
-        description = p_tag.get_text(strip=True) if p_tag else ""
-        link_raw = a_tag.get("href", "")
-        image_raw = img_tag.get("src", "")
-        date_text = span_date.get_text(strip=True)
-
-        link = urljoin(BASE_URL, link_raw)
-        image_url = urljoin(BASE_URL, image_raw)
-        parsed = parse_date(date_text)
-
-        if not headline or not link.startswith("http"):
-            continue
-
-        articles.append({
-            "headline": headline,
-            "description": description,
-            "link": link,
-            "image_url": image_url,
-            "date": date_text,
-            "parsed_date": parsed,
-        })
-
-    return articles
-
-# ===== Telegram sending =====
-
-def send_telegram(message: str) -> None:
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    r = requests.post(url, json=payload, timeout=10)
+def _safe_get(url:str, **kw) -> requests.Response:
+    r = _session().get(url, **kw)
     r.raise_for_status()
+    return r
 
+# ────────── Telegram helpers ───────── #
+_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"            # caracteres especiales MDv2
+def _esc(t:str)->str: return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
 
-def send_article(article: dict) -> None:
-    import urllib.parse
-
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    headline = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
-    description = article["description"].strip().replace("<", "&lt;").replace(">", "&gt;")
-    link = article["link"]
-
-    parts = [f"<b>{headline}</b>"]
-    if description:
-        parts.extend(["", description])
-    parts.extend([
+def _mk_msg(title:str, desc:str, link:str) -> str:
+    parts = [
+        f"*{_esc(title)}*",
         "",
-        f'<a href="{link}">Lire l’article complet</a>',
+        _esc(desc),
         "",
-        "@MorrocanFinancialNews"
-    ])
-    caption = "\n".join(parts)
+        f"[Lire l’article complet]({_esc(link)})",
+        "",
+        "@MorrocanFinancialNews",
+    ]
+    return "\n".join(parts)
 
-    original_url = article["image_url"]
-    try:
-        head_resp = requests.head(original_url, timeout=5)
-        content_type = head_resp.headers.get("Content-Type", "")
-        if head_resp.status_code == 200 and content_type.startswith("image/"):
-            photo_url = urllib.parse.quote(original_url, safe=":/?&=#")
-            api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
-            payload = {
-                "chat_id": chat_id,
-                "photo": photo_url,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-            print(f"DEBUG: Sending photo to {chat_id}, photo={photo_url}")
-            resp = requests.post(api_url, json=payload, timeout=10)
-            resp.raise_for_status()
-            print("DEBUG: sendPhoto OK")
-            return
-    except Exception as e:
-        print(f"DEBUG: Image HEAD check failed, falling back to text: {e}")
+def _norm_img(url:str)->str:
+    sch, net, path, query, frag = urlsplit(url)
+    return urlunsplit((sch, net, quote(path, safe='/%'),
+                       quote_plus(query, safe='=&'), frag))
 
-    print("DEBUG: Sending text-only fallback")
-    send_telegram(caption)
+def _send(title:str, desc:str, link:str, img:str|None):
+    msg = _mk_msg(title, desc, link)
+    caption = msg[:1024]
+    body    = msg[:4096]
 
-
-def send_alert(message: str) -> None:
-    token = os.getenv("TELEGRAM_TOKEN")
-    alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": alert_chat,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    resp = requests.post(url, json=payload, timeout=10)
-    resp.raise_for_status()
-
-
-# ===== Main workflow =====
-
-def main():
-    URL = "https://boursenews.ma/articles/marches"
-    html = fetch_url(URL)
-    articles = parse_articles(html)
-
-    print(f"DEBUG: Parsed {len(articles)} total articles")
-    today_str = date.today().isoformat()
-    all_today = [a for a in articles if a["parsed_date"] == today_str]
-
-    sent_urls = load_sent()
-    print(f"DEBUG: Loaded {len(sent_urls)} sent URLs from cache")
-    todays = [a for a in all_today if a["link"] not in sent_urls]
-
-    if not todays:
-        return
-
-    print(f"DEBUG: Found {len(todays)} articles for {today_str}")
-
-    for idx, article in enumerate(todays, 1):
-        print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
+    if img:
         try:
-            send_article(article)
-            print(f"DEBUG: Sent article {idx}/{len(todays)}")
-            time.sleep(10)
+            _session().head(img, timeout=5).raise_for_status()
+            _session().post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                json={
+                    "chat_id": TG_CHAT,
+                    "photo": _norm_img(img),
+                    "caption": caption,
+                    "parse_mode": "MarkdownV2",
+                },
+                timeout=10
+            ).raise_for_status()
+            return
         except Exception as e:
-            print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
+            print("[WARN] sendPhoto falló, envío texto:", e)
 
-    sent_urls.update(a["link"] for a in todays)
-    save_sent(sent_urls)
-    print(f"DEBUG: saved {len(sent_urls)} URLs to sent_articles.json")
+    _session().post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        json={
+            "chat_id": TG_CHAT,
+            "text": body,
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": False,
+        },
+        timeout=10
+    ).raise_for_status()
 
+# ───────────── Cache ───────────── #
+def _load_cache()->set[str]:
+    return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
 
-if __name__ == "__main__":
+def _save_cache(c:set):
+    CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
+
+# ──────── Medias24 specific ─────── #
+_PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
+_PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+_PAT_IGNORE = re.compile(           # líneas que queremos saltar
+    r"^(?:La|Le|Les|Marché|Bourse|Séance|Toute)\b.*$", re.I)
+
+def _strip_md_links(text:str) -> str:
+    """Quita markdown [texto](url) → texto"""
+    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+def _article_image(url:str)->str:
+    """Devuelve og:image o primera <img>, o ''"""
+    try:
+        html=_safe_get(url, timeout=10).text
+        soup=BeautifulSoup(html,"html.parser")
+        og=soup.find("meta",property="og:image")
+        if og and og.get("content"): return og["content"]
+        img=soup.find("img")
+        if img and img.get("src"): return urllib.parse.urljoin(url, img["src"])
+    except Exception: pass
+    return ""
+
+def _parse_medias24(md:str)->List[Dict]:
+    lines=md.splitlines()
+    out:List[Dict]=[]
+    i=0
+    while i<len(lines):
+        m=_PAT_HEADER.match(lines[i])
+        if m and i+1<len(lines):
+            d,mn,y=m.groups()
+            pdate=f"{y}-{int(mn):02d}-{int(d):02d}"
+
+            m2=_PAT_LINK.match(lines[i+1])
+            if m2:
+                title, link = m2.groups()
+                desc=""
+                j=i+2
+                while j<len(lines):
+                    txt=lines[j].strip()
+                    if (not txt or
+                        _PAT_IGNORE.match(txt) or
+                        txt.startswith("![") or          # imagen markdown
+                        _PAT_LINK.match(txt) or
+                        re.fullmatch(r"=+", txt)):
+                        j+=1; continue
+                    desc=_strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
+                    break
+
+                out.append({
+                    "title": title,
+                    "desc":  desc,
+                    "link":  link,
+                    "img":   _article_image(link),
+                    "pdate": pdate,
+                })
+            i+=2
+        else:
+            i+=1
+    return out
+
+def fetch_medias24()->str:
+    url_html="http://medias24.com/categorie/leboursier/actus/"
+    cache=TMP_DIR/(hashlib.md5(url_html.encode()).hexdigest()+".md")
+    if cache.exists() and cache.stat().st_mtime > time.time()-3600:
+        return cache.read_text(encoding="utf-8")
+
+    print("[DEBUG] downloading via jina.ai")
+    url_jina=f"https://r.jina.ai/http://{url_html.removeprefix('http://').removeprefix('https://')}"
+    md=_safe_get(url_jina,timeout=15).text
+    cache.write_text(md,encoding="utf-8")
+    return md
+
+# ───────────── Main ───────────── #
+def main():
+    cache=_load_cache()
+    print("— medias24_leboursier —")
+
+    try:
+        articles=_parse_medias24(fetch_medias24())
+    except Exception as e:
+        print("[ERROR] Medias24:",e); articles=[]
+
+    print("DEBUG – lista completa parseada:")
+    for a in articles: print(" •",a["title"][:70],"| pdate:",a["pdate"])
+    print("------------------------------------------------\n")
+
+    for a in articles:
+        if a["link"] in cache: continue
+        if a["pdate"] not in ALLOWED_DATES: continue
+        try:
+            print(" Enviando:",a["title"][:60])
+            _send(a["title"],a["desc"],a["link"],a["img"])
+            cache.add(a["link"]); time.sleep(8)
+        except Exception as e:
+            print("[ERROR] Telegram:",e)
+
+    _save_cache(cache)
+
+if __name__=="__main__":
     main()
