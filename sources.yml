@@ -1,3 +1,57 @@
+# ───────────── Finances News ─────────────
+- name: financesnews
+  list_url: "https://fnh.ma/articles/actualite-financiere-maroc"
+  base_url: "https://fnh.ma"
+  selectors:
+    container: "div.row"                       # bloque <div class="row">…</div>
+    headline:  "h2 a"                          # titular + enlace
+    link_attr: "href"
+    description: "div.list_article_detail p"   # primer párrafo
+    image: "img::attr(src)"                    # miniatura
+    date:  "label.itemdate"                    # «Vendredi 25 Juillet 2025»
+  date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
+  month_map: &fr_months
+    Janvier:    "01"
+    Février:    "02"
+    Mars:       "03"
+    Avril:      "04"
+    Mai:        "05"
+    Juin:       "06"
+    Juillet:    "07"
+    Août:       "08"
+    Septembre:  "09"
+    Octobre:    "10"
+    Novembre:   "11"
+    Décembre:   "12"
+
+   # ───────────── L’Economiste – Économie ─────────────
+- name: leconomiste_economie
+  list_url: "https://www.leconomiste.com/categorie/Economie"
+  base_url: "https://www.leconomiste.com"
+  selectors:
+    container: "div.col-xs-12.col-sm-12.col-md-6.col-lg-6"   # <div …> que agrupa miniatura+texto
+    headline:  "h2 a"                                        # <h2><a …>
+    link_attr: "href"
+    description: ""                                          # (se rellenará con meta‑description)
+    image: "div.image_une img::attr(src)"
+    date:  "span.date-display-single"                        # «31/07/25» o «31/07/2025»
+  # dd/mm/yy o dd/mm/yyyy
+  date_regex: "(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})"
+
+# ───────────── Ecoactu – Économie ─────────────
+- name: ecoactu_nationale
+  list_url: "https://ecoactu.ma/economie/economie-nationale/"
+  base_url: "https://ecoactu.ma"
+  selectors:
+    container: "li.list-post"
+    headline: "h2 a"
+    link_attr: "href"
+    description: "div.item-content p"
+    image: "div.thumbnail a::attr(style), figure img::attr(src), img::attr(src)"
+    date: "time.entry-date"
+  date_regex: "\\b(\\d{1,2})\\s+([A-Za-zéû]+)\\s+(\\d{4})\\b"
+  month_map: *fr_months
+
 # Médias24 – LeBoursier
 - name: medias24_leboursier
   list_url: "https://medias24.com/categorie/leboursier/feed/"
