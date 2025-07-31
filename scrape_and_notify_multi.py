@@ -1,69 +1,74 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix4”
+Versión «medias24 v4-lite-fix5»
 ────────────────────────────────────────────────────────
-• Envía artículos de los últimos 3 días (hoy, −1, −2)
+• Envía artículos de los últimos 3 días (hoy, -1, -2)
 • Sin dependencias externas
-• Sin tarjetas de enlace ni líneas duplicadas
+• Sin “tarjetas” (link-preview desactivado)
+• Formato con espacios fijos y sin líneas-fecha sueltas
 """
 
-import hashlib, json, os, re, tempfile, time, requests
-from datetime import datetime, timedelta
-from pathlib  import Path
-from typing   import Dict, List
+import hashlib, json, os, re, tempfile, time, urllib.parse, requests
+from datetime   import datetime, timedelta
+from pathlib     import Path
+from typing      import Dict, List
+from bs4         import BeautifulSoup          # noqa: F401  (reserva futuro)
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from urllib3.util.retry  import Retry
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 
-# ───────────────── Config ───────────────── #
+# ───────────────────────── Config ───────────────────────── #
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
 TMP_DIR.mkdir(exist_ok=True)
 
-TODAY = datetime.utcnow().date()
-ALLOWED_DATES = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
+TODAY          = datetime.utcnow().date()
+ALLOWED_DATES  = { (TODAY - timedelta(days=i)).isoformat() for i in range(3) }
 
-# ─────────── HTTP helpers ─────────── #
+# ───────────────────── HTTP helpers ────────────────────── #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix4)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-lite-fix5)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
-                  status_forcelist=(429,500,502,503,504),
-                  allowed_methods=frozenset(["GET","HEAD"]))
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(["GET", "HEAD"]))
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
-def _safe_get(url:str, **kw) -> requests.Response:
+def _safe_get(url: str, **kw) -> requests.Response:
     r = _session().get(url, **kw)
     r.raise_for_status()
     return r
 
-# ───────── Telegram helpers ───────── #
+# ─────────────────── Telegram helpers ─────────────────── #
 _SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
-def _esc(t:str)->str: return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
+def _esc(t: str) -> str:
+    return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
 
-def _mk_msg(title:str, desc:str, link:str) -> str:
-    return "\n".join(filter(None, [
+def _mk_msg(title: str, desc: str, link: str) -> str:
+    return "\n".join([
         f"*{_esc(title)}*",
-        _esc(desc) if desc else None,
+        "",                           # ← línea en blanco fija
+        _esc(desc),
+        "",                           # ← otra línea en blanco fija
         f"[Lire l’article complet]({_esc(link)})",
         "",
-        "@MorrocanFinancialNews"
-    ]))
+        "@MorrocanFinancialNews",
+    ])
 
-def _norm_img(url:str)->str:
+def _norm_img(url: str) -> str:
     sch, net, path, query, frag = urlsplit(url)
     return urlunsplit((sch, net, quote(path, safe='/%'),
                        quote_plus(query, safe='=&'), frag))
 
-def _send(title:str, desc:str, link:str, img:str|None):
+def _send(title: str, desc: str, link: str, img: str | None):
     caption = _mk_msg(title, desc, link)[:1024]
     body    = _mk_msg(title, desc, link)[:4096]
 
@@ -73,8 +78,10 @@ def _send(title:str, desc:str, link:str, img:str|None):
             safe = _norm_img(img)
             _session().post(
                 f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                json={"chat_id": TG_CHAT, "photo": safe,
-                      "caption": caption, "parse_mode": "MarkdownV2"},
+                json={"chat_id": TG_CHAT,
+                      "photo": safe,
+                      "caption": caption,
+                      "parse_mode": "MarkdownV2"},
                 timeout=10).raise_for_status()
             return
         except Exception:
@@ -82,61 +89,59 @@ def _send(title:str, desc:str, link:str, img:str|None):
 
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id": TG_CHAT, "text": body,
-              "parse_mode": "MarkdownV2", "disable_web_page_preview": False},
+        json={"chat_id": TG_CHAT,
+              "text": body,
+              "parse_mode": "MarkdownV2",
+              "disable_web_page_preview": True},   # ← sin tarjeta
         timeout=10).raise_for_status()
 
-# ───────────── Cache ───────────── #
-def _load_cache()->set[str]:
+# ─────────────────────── Cache ────────────────────────── #
+def _load_cache() -> set[str]:
     return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
-def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
-# ──────── Medias24 specific ─────── #
-PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
-PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
+def _save_cache(c: set):
+    CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
-BAD_HDRS   = {"La bourse", "La séance du jour", "Marché de change", "Bourse"}  # ignora líneas-sección
-
-def _strip_md_links(text:str) -> str:
-    """Elimina enlaces markdown embebidos dejando solo el texto visible."""
-    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+# ──────────── Medias24 specific parser ──────────────── #
+_PAT_HEADER   = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
+_PAT_LINK     = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+_PAT_DATELINE = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}$")   # ej. 31-07-2025
+_PAT_STRIPMD  = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 
 def _parse_medias24(md: str) -> List[Dict]:
     lines = md.splitlines()
     out: List[Dict] = []
     i = 0
     while i < len(lines):
-        m = PAT_HEADER.match(lines[i])
+        m = _PAT_HEADER.match(lines[i])
         if m and i + 1 < len(lines):
             d, mn, y = m.groups()
             pdate = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            m2 = PAT_LINK.match(lines[i + 1])
+            # título + enlace
+            m2 = _PAT_LINK.match(lines[i + 1])
             if m2:
                 title, link = m2.groups()
 
-                # buscar descripción válida antes del siguiente bloque
+                # descripción → primer párrafo “limpio”
                 desc = ""
                 j = i + 2
                 while j < len(lines):
-                    line = lines[j].strip()
-                    if PAT_HEADER.match(line):          # llegó al siguiente artículo
-                        break
-                    if (not line or
-                        re.fullmatch(r"=+", line) or
-                        PAT_DATE.match(line) or
-                        PAT_LINK.match(line) or
-                        line in BAD_HDRS):
-                        j += 1; continue
-                    desc = _strip_md_links(re.sub(r"\s+", " ", line)).strip(" …")
+                    txt = lines[j].strip()
+                    if (not txt or
+                        re.fullmatch(r"=+", txt) or
+                        _PAT_DATELINE.match(txt) or
+                        _PAT_LINK.match(txt)):
+                        j += 1
+                        continue
+                    desc = _PAT_STRIPMD.sub(r"\1", re.sub(r"\s+", " ", txt)).strip(" …")
                     break
 
                 out.append({
                     "title": title,
                     "desc":  desc,
                     "link":  link,
-                    "img":   "",          # de momento sin imagen propia
+                    "img":   "",     # jina.ai no devuelve imágenes
                     "pdate": pdate,
                 })
             i += 2
@@ -156,7 +161,7 @@ def fetch_medias24() -> str:
     cache.write_text(md, encoding="utf-8")
     return md
 
-# ───────────── Main ───────────── #
+# ───────────────────────── Main ──────────────────────── #
 def main():
     cache = _load_cache()
     print("— medias24_leboursier —")
@@ -164,19 +169,24 @@ def main():
     try:
         arts = _parse_medias24(fetch_medias24())
     except Exception as e:
-        print("[ERROR] Medias24:", e); arts=[]
+        print("[ERROR] Medias24:", e)
+        arts = []
 
     print("DEBUG – lista completa parseada:")
-    for a in arts: print(" •", a["title"][:70], "| pdate:", a["pdate"])
+    for a in arts:
+        print(" •", a["title"][:70], "| pdate:", a["pdate"])
     print("------------------------------------------------\n")
 
     for a in arts:
-        if a["link"] in cache:           continue
-        if a["pdate"] not in ALLOWED_DATES: continue
+        if a["link"] in cache:
+            continue
+        if a["pdate"] not in ALLOWED_DATES:
+            continue
         try:
             print(" Enviando:", a["title"][:60])
             _send(a["title"], a["desc"], a["link"], a["img"])
-            cache.add(a["link"]); time.sleep(8)
+            cache.add(a["link"])
+            time.sleep(8)
         except Exception as e:
             print("[ERROR] Telegram:", e)
 
