@@ -5,16 +5,20 @@ Versión “medias24 v4-lite-fix6”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Salto de línea tras el primer ‘:’ del título
-• Filtra tablas-markdown y cabeceras genéricas (“Marché …”, “La séance …”, etc.)
-• Desactiva siempre la vista previa de enlaces
+• Salto de línea tras el primer “:”
+• Filtra tablas markdown y líneas-etiqueta genéricas
+• Desactiva vista previa de enlaces
+• Ignora:
+    - «Journée du dd-mm-aaaa»
+    - líneas que sean solo «dd-mm-aaaa»
+    - «MASI Pts» (con o sin espacios extra, con o sin tildes)
 """
 
-import hashlib, json, os, re, tempfile, time, requests, \
-       urllib.parse as ul
-from datetime import datetime, timedelta
-from pathlib   import Path
-from typing    import List
+import hashlib, json, os, re, tempfile, time, unicodedata, requests
+from datetime   import datetime, timedelta
+from pathlib     import Path
+from typing      import List
+from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -65,9 +69,9 @@ def _mk_msg(title:str, desc:str, link:str) -> str:
     ])
 
 def _norm_img(url:str)->str:
-    sch, net, path, query, frag = ul.urlsplit(url)
-    return ul.urlunsplit((sch, net, ul.quote(path, safe='/%'),
-                          ul.quote_plus(query, safe='=&'), frag))
+    sch, net, path, query, frag = urlsplit(url)
+    return urlunsplit((sch, net, quote(path, safe='/%'),
+                       quote_plus(query, safe='=&'), frag))
 
 def _send(title:str, desc:str, link:str, img:str|None):
     caption = _mk_msg(title, desc, link)[:1024]
@@ -101,13 +105,25 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=Fa
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 _PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
-_SKIP_TAGS  = {
-    "marché de change", "la séance du jour", "la bourse",
-    "masi pts",                     # ← nuevo
+_RE_BARE_DATE = re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")
+_RE_JOURNEE   = re.compile(r"^journee du \d{1,2}-\d{1,2}-\d{4}$")
+
+def _no_accents(text:str)->str:
+    return ''.join(c for c in unicodedata.normalize('NFD', text)
+                   if unicodedata.category(c) != 'Mn')
+
+_SKIP_TAGS = {
+    "marché de change", "la séance du jour", "la bourse", "masi pts",
 }
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+def _norm_line(txt:str)->str:
+    """Minúsculas, sin tildes, un solo espacio."""
+    no_acc = _no_accents(txt)
+    one_sp = re.sub(r"\s+", " ", no_acc).strip()
+    return one_sp.lower()
 
 def _parse_medias24(md:str) -> List[dict]:
     lines = md.splitlines()
@@ -126,19 +142,24 @@ def _parse_medias24(md:str) -> List[dict]:
                 desc = ""
                 j = i+2
                 while j < len(lines):
-                    txt = lines[j].strip()
-                    low = txt.lower()
-                    if (not txt or
-                        txt.startswith("|") or txt.count("|")>=2 or
-                        re.fullmatch(r"=+", txt) or
-                        _PAT_DATE.match(txt) or
-                        _PAT_LINK.match(txt) or
-                        low in _SKIP_TAGS):
+                    raw = lines[j].strip()
+                    norm = _norm_line(raw)
+
+                    if (not raw or
+                        raw.startswith("|") or raw.count("|")>=2 or
+                        re.fullmatch(r"=+", raw) or
+                        _PAT_DATE.match(raw) or
+                        _PAT_LINK.match(raw) or
+                        norm in _SKIP_TAGS or
+                        _RE_BARE_DATE.match(norm) or
+                        _RE_JOURNEE.match(norm)):
                         j += 1; continue
-                    desc = _strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
+
+                    desc = _strip_md_links(re.sub(r"\s+"," ", raw)).strip(" …")
                     break
+
                 if not desc:
-                    desc = " "   # NBSP para conservar salto
+                    desc = " "   # mantiene el salto
 
                 out.append({"title":title,"desc":desc,"link":link,
                             "img":"","pdate":pdate})
@@ -154,8 +175,8 @@ def fetch_medias24() -> str:
         return cache.read_text(encoding="utf-8")
 
     print("[DEBUG] downloading via jina.ai")
-    strip = url_html.removeprefix("http://").removeprefix("https://")
-    md = _safe_get("https://r.jina.ai/http://" + strip, timeout=15).text
+    url_jina = "https://r.jina.ai/http://" + url_html.removeprefix("http://").removeprefix("https://")
+    md = _safe_get(url_jina, timeout=15).text
     cache.write_text(md, encoding="utf-8")
     return md
 
