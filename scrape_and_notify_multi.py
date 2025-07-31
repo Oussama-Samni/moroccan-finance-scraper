@@ -1,42 +1,41 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix7”
+Versión “medias24 v5-wpjson”
 ────────────────────────────────────────────────────────
-• Envía artículos de los últimos 3 días (hoy,-1,-2)
-• Sin dependencias externas
-• Inserta salto tras el primer “:”
-• Filtra:
-     – tablas markdown
-     – etiquetas genéricas (“Marché de change”…)
-     – fechas sueltas (31-07-2025)
-     – siglas mayúsculas seguidas de “Pts” (ej. MASI Pts)
-• Desactiva siempre la vista previa de enlaces
+• Toma directamente el JSON de la API WordPress (categoría Actus, id 5877)
+• Envía solo los artículos de hoy y -2 días (3 días ventana)
+• Inserta salto de línea tras el primer “:”
+• Incluye imagen destacada si existe; si falla → texto sin vista previa
 """
 
-import hashlib, json, os, re, tempfile, time, requests
-from datetime   import datetime, timedelta
+import html, json, os, re, time, hashlib, tempfile, requests
+from datetime   import datetime, timedelta, timezone
 from pathlib     import Path
-from typing      import List
+from typing      import List, Dict
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ─────────── Config ─────────── #
+# ───────── Config ───────── #
 CACHE_FILE = Path("sent_articles.json")
 TG_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT    = os.getenv("TELEGRAM_CHAT_ID")
 TMP_DIR    = Path(tempfile.gettempdir()) / "mfn_cache"
 TMP_DIR.mkdir(exist_ok=True)
 
-TODAY = datetime.utcnow().date()
-ALLOWED_DATES = {(TODAY - timedelta(days=i)).isoformat() for i in range(3)}
+TODAY_UTC = datetime.now(timezone.utc).date()
+ALLOWED_DATES = {(TODAY_UTC - timedelta(days=i)).isoformat() for i in range(3)}
 
-# ─────────── HTTP ─────────── #
+CAT_ID   = 5877                      # “Actus” dentro de LeBoursier
+API_URL  = f"https://medias24.com/wp-json/wp/v2/posts"
+QUERY    = f"?categories={CAT_ID}&per_page=20&_embed"
+
+# ───────── HTTP ───────── #
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix7)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/2.0-wpjson)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -46,17 +45,20 @@ def _session() -> requests.Session:
     s.mount("http://",  HTTPAdapter(max_retries=retry))
     return s
 
-def _safe_get(url:str, **kw) -> requests.Response:
-    r=_session().get(url, **kw); r.raise_for_status(); return r
+def _safe_get(url: str, **kw) -> requests.Response:
+    r = _session().get(url, **kw)
+    r.raise_for_status()
+    return r
 
-# ────────── Telegram ────────── #
-_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
-def _esc(t:str)->str: return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
+# ───────── Telegram helpers ───────── #
+_MD_SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
+def _esc(t: str) -> str:
+    return re.sub(f"([{re.escape(_MD_SPECIAL)}])", r"\\\1", t)
 
-def _newline_title(t:str) -> str:
+def _newline_title(t: str) -> str:
     return re.sub(r"\s*:\s*", ":\n", t, count=1)
 
-def _mk_msg(title:str, desc:str, link:str) -> str:
+def _mk_msg(title: str, desc: str, link: str) -> str:
     return "\n".join([
         f"*{_esc(_newline_title(title))}*",
         "",
@@ -67,130 +69,113 @@ def _mk_msg(title:str, desc:str, link:str) -> str:
         "@MorrocanFinancialNews",
     ])
 
-def _norm_img(url:str)->str:
-    sch,net,path,query,frag=urlsplit(url)
-    return urlunsplit((sch,net,quote(path,safe='/%'),
-                       quote_plus(query,safe='=&'),frag))
+def _norm_img(url: str) -> str:
+    sch, net, path, query, frag = urlsplit(url)
+    return urlunsplit((sch, net, quote(path, safe='/%'),
+                       quote_plus(query, safe='=&'), frag))
 
-def _send(title:str, desc:str, link:str, img:str|None):
-    caption=_mk_msg(title,desc,link)[:1024]
-    body   =_mk_msg(title,desc,link)[:4096]
+def _send(title: str, desc: str, link: str, img: str | None):
+    caption = _mk_msg(title, desc, link)[:1024]
+    body    = _mk_msg(title, desc, link)[:4096]
 
     if img:
         try:
-            _session().head(img,timeout=5).raise_for_status()
-            safe=_norm_img(img)
+            _session().head(img, timeout=5).raise_for_status()
+            safe = _norm_img(img)
             _session().post(
                 f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                json={"chat_id":TG_CHAT,"photo":safe,
-                      "caption":caption,"parse_mode":"MarkdownV2"},
+                json={"chat_id": TG_CHAT,
+                      "photo": safe,
+                      "caption": caption,
+                      "parse_mode": "MarkdownV2"},
                 timeout=10).raise_for_status()
             return
         except Exception:
-            pass
+            pass  # fallback texto
 
     _session().post(
         f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-        json={"chat_id":TG_CHAT,"text":body,
-              "parse_mode":"MarkdownV2","disable_web_page_preview":True},
+        json={"chat_id": TG_CHAT,
+              "text": body,
+              "parse_mode": "MarkdownV2",
+              "disable_web_page_preview": True},
         timeout=10).raise_for_status()
 
 # ───────── Cache ───────── #
-def _load_cache()->set[str]:
+def _load_cache() -> set[str]:
     return set(json.loads(CACHE_FILE.read_text())) if CACHE_FILE.exists() else set()
-def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=False,indent=2))
 
-# ──────── Medias24 parser ─────── #
-_PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
-_PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-_PAT_DATE_LINE = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}$")  # 31-07-2025
-_PAT_INLINE_DATE = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
+def _save_cache(c: set):
+    CACHE_FILE.write_text(json.dumps(list(c), ensure_ascii=False, indent=2))
 
-_SKIP_TAGS_EXACT = {
-    "marché de change",
-    "la séance du jour",
-    "la bourse",
-}
-# regex para siglas tipo “MASI Pts”
-_PAT_SIGLAS_PTS = re.compile(r"^[A-ZÉÈÎÂÀÇ][A-Z0-9ÉÈÎÂÀÇ\s]{2,20}\s+Pts$", re.ASCII)
+# ──────── Helpers ─────── #
+_TAG_RE = re.compile(r"<[^>]+>")              # strip HTML tags quickly
+def _strip_html(text: str) -> str:
+    return _TAG_RE.sub("", html.unescape(text)).strip()
 
-def _skip_line(txt:str)->bool:
-    low=txt.lower()
-    # 1) fecha sola
-    if _PAT_DATE_LINE.match(txt): return True
-    # 2) siglas + Pts
-    if _PAT_SIGLAS_PTS.match(txt): return True
-    # 3) exactos
-    if low in _SKIP_TAGS_EXACT: return True
-    # 4) empieza o contiene
-    for tag in _SKIP_TAGS_EXACT:
-        if low.startswith(tag[:10]) or tag in low: return True
-    # 5) tablas, ===, fechas con “Le”, links
-    if (txt.startswith("|") and txt.count("|")>=2): return True
-    if re.fullmatch(r"=+", txt): return True
-    if _PAT_INLINE_DATE.match(txt): return True
-    if _PAT_LINK.match(txt): return True
-    return False
+# ──────── Fetch & parse ─────── #
+def fetch_wp_json() -> List[Dict]:
+    cache_f = TMP_DIR / "medias24_actus.json"
+    if cache_f.exists() and cache_f.stat().st_mtime > time.time() - 900:
+        return json.loads(cache_f.read_text())
 
-def _strip_md_links(text:str)->str:
-    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    print("[DEBUG] downloading WP JSON")
+    data = _safe_get(API_URL + QUERY, timeout=15).json()
+    cache_f.write_text(json.dumps(data), encoding="utf-8")
+    return data
 
-def _parse_medias24(md:str)->List[dict]:
-    lines=md.splitlines(); out=[]; i=0
-    while i<len(lines):
-        m=_PAT_HEADER.match(lines[i])
-        if m and i+1<len(lines):
-            d,mn,y=m.groups(); pdate=f"{y}-{int(mn):02d}-{int(d):02d}"
-            m2=_PAT_LINK.match(lines[i+1])
-            if m2:
-                title,link=m2.groups()
-                desc=""; j=i+2
-                while j<len(lines):
-                    txt=lines[j].strip()
-                    if not txt or _skip_line(txt):
-                        j+=1; continue
-                    desc=_strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
-                    break
-                if not desc: desc=" "
-                out.append({"title":title,"desc":desc,"link":link,
-                            "img":"","pdate":pdate})
-            i+=2
-        else:
-            i+=1
+def _parse_items(items: List[Dict]) -> List[Dict]:
+    out = []
+    for post in items:
+        # fecha UTC
+        pdate = post["date_gmt"][:10]
+
+        title = _strip_html(post["title"]["rendered"])
+        desc_raw = (post.get("yoast_head_json", {}) or {}).get("description") \
+                   or post.get("excerpt", {}).get("rendered", "")
+        desc = _strip_html(desc_raw) or " "           # dejar línea en blanco si vacío
+
+        link = post["link"]
+
+        img = ""
+        media = post.get("_embedded", {}).get("wp:featuredmedia")
+        if media and isinstance(media, list) and media[0].get("source_url"):
+            img = media[0]["source_url"]
+
+        out.append({"title": title, "desc": desc, "link": link,
+                    "img": img, "pdate": pdate})
     return out
-
-def fetch_medias24()->str:
-    url="http://medias24.com/categorie/leboursier/actus/"
-    cache=TMP_DIR/(hashlib.md5(url.encode()).hexdigest()+".md")
-    if cache.exists() and cache.stat().st_mtime>time.time()-3600:
-        return cache.read_text(encoding="utf-8")
-    print("[DEBUG] downloading via jina.ai")
-    md=_safe_get("https://r.jina.ai/http://"+url.removeprefix("http://").removeprefix("https://"),
-                 timeout=15).text
-    cache.write_text(md,encoding="utf-8")
-    return md
 
 # ───────── Main ───────── #
 def main():
-    cache=_load_cache()
-    print("— medias24_leboursier —")
+    cache = _load_cache()
+    print("— medias24_leboursier (WP JSON) —")
+
     try:
-        arts=_parse_medias24(fetch_medias24())
+        arts = _parse_items(fetch_wp_json())
     except Exception as e:
-        print("[ERROR] Medias24:",e); arts=[]
+        print("[ERROR] Medias24:", e)
+        arts = []
+
     print("DEBUG – lista completa parseada:")
-    for a in arts: print(" •",a["title"][:70],"| pdate:",a["pdate"])
-    print("------------------------------------------------\n")
     for a in arts:
-        if a["link"] in cache: continue
-        if a["pdate"] not in ALLOWED_DATES: continue
+        print(" •", a["title"][:70], "| pdate:", a["pdate"])
+    print("------------------------------------------------\n")
+
+    for a in arts:
+        if a["link"] in cache:
+            continue
+        if a["pdate"] not in ALLOWED_DATES:
+            continue
         try:
-            print(" Enviando:",a["title"][:60])
-            _send(a["title"],a["desc"],a["link"],a["img"])
-            cache.add(a["link"]); time.sleep(8)
+            print(" Enviando:", a["title"][:60])
+            _send(a["title"], a["desc"], a["link"], a["img"])
+            cache.add(a["link"])
+            time.sleep(8)
         except Exception as e:
-            print("[ERROR] Telegram:",e)
+            print("[ERROR] Telegram:", e)
+
     _save_cache(cache)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
