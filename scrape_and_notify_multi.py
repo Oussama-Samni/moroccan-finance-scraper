@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix4”
+Versión “medias24 v4-lite-fix5”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Filtra tablas markdown, mantiene salto aun sin descripción,
-  y desactiva siempre la vista previa de enlaces.
+• Salto de línea tras el primer “:” del título
+• Filtra tablas markdown y líneas-etiqueta genéricas
+• Sin vista previa de enlaces
 """
 
 import hashlib, json, os, re, tempfile, time, requests
-from datetime import datetime, timedelta
-from pathlib   import Path
-from typing    import List
+from datetime   import datetime, timedelta
+from pathlib     import Path
+from typing      import List
 from urllib.parse import urlsplit, urlunsplit, quote, quote_plus
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -31,7 +32,7 @@ ALLOWED_DATES = {(TODAY - timedelta(days=i)).isoformat() for i in range(3)}
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix4)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix5)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -48,9 +49,13 @@ def _safe_get(url:str, **kw) -> requests.Response:
 _SPECIAL = r"_*[]()~`>#+-=|{}.!\\"
 def _esc(t:str) -> str: return re.sub(f"([{re.escape(_SPECIAL)}])", r"\\\1", t)
 
+def _newline_title(t:str) -> str:
+    """Inserta un salto de línea tras el primer ':' (si existe)."""
+    return re.sub(r"\s*:\s*", ":\n", t, count=1)
+
 def _mk_msg(title:str, desc:str, link:str) -> str:
     return "\n".join([
-        f"*{_esc(title)}*",
+        f"*{_esc(_newline_title(title))}*",
         "",
         _esc(desc),
         "",
@@ -96,6 +101,9 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=Fa
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 _PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
+_SKIP_TAGS  = {
+    "marché de change", "la séance du jour", "la bourse",
+}
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
@@ -118,11 +126,13 @@ def _parse_medias24(md:str) -> List[dict]:
                 j = i+2
                 while j < len(lines):
                     txt = lines[j].strip()
+                    low = txt.lower()
                     if (not txt or
-                        txt.startswith("|") or txt.count("|")>=2 or     # ⬅︎ filtra tablas
+                        txt.startswith("|") or txt.count("|")>=2 or
                         re.fullmatch(r"=+", txt) or
                         _PAT_DATE.match(txt) or
-                        _PAT_LINK.match(txt)):
+                        _PAT_LINK.match(txt) or
+                        low in _SKIP_TAGS):
                         j += 1; continue
                     desc = _strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
                     break
