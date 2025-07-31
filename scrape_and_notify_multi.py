@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix6”
+Versión “medias24 v4-lite-fix7”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Salto de línea tras el primer “:” del título
-• Filtrado robusto de tablas y etiquetas (normaliza acentos/mayúsculas)
-• Sin vista previa de enlaces
+• Salto de línea tras el primer “:”
+• Filtra tablas markdown, líneas-etiqueta genéricas y *cualquier* fecha
+• Desactiva siempre la vista previa de enlaces
 """
 
-import hashlib, json, os, re, tempfile, time, unicodedata, requests
+import hashlib, json, os, re, tempfile, time, requests
 from datetime   import datetime, timedelta
 from pathlib     import Path
 from typing      import List
@@ -32,7 +32,7 @@ ALLOWED_DATES = {(TODAY - timedelta(days=i)).isoformat() for i in range(3)}
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix6)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix7)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -98,22 +98,14 @@ def _load_cache()->set[str]:
 def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=False,indent=2))
 
 # ──────── Medias24 parser ─────── #
+PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
+PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+DATE_RE    = re.compile(r"^\s*(?:le\s+)?\d{1,2}[/-]\d{1,2}[/-]\d{4}", re.I)
 
-def _canonical(t: str) -> str:
-    """minúsculas + sin acentos + colapso espacios para comparación flexible"""
-    t = unicodedata.normalize("NFKD", t).encode("ascii","ignore").decode()
-    t = re.sub(r"\s+", " ", t.lower()).strip()
-    return t
-
-STOP = {
-    "journee du", "la seance du jour", "marche de change",
-    "la bourse", "masi pts", "variations valeur par valeur",
+SKIP_TAGS  = {
+    "marché de change", "la séance du jour", "la bourse",
+    "masi pts", "journée du", "variations valeur par valeur",
 }
-
-SKIP_RE = re.compile(r"^(journee du \d{1,2}-\d{1,2}-\d{4}|\d{1,2}-\d{1,2}-\d{4})$")
-
-_PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
-_PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
@@ -123,29 +115,28 @@ def _parse_medias24(md:str) -> List[dict]:
     out   : List[dict] = []
     i = 0
     while i < len(lines):
-        m = _PAT_HEADER.match(lines[i])
+        m = PAT_HEADER.match(lines[i])
         if m and i+1 < len(lines):
             d,mn,y = m.groups()
             pdate  = f"{y}-{int(mn):02d}-{int(d):02d}"
 
-            m2 = _PAT_LINK.match(lines[i+1])
+            m2 = PAT_LINK.match(lines[i+1])
             if m2:
                 title, link = m2.groups()
 
                 desc = ""
                 j = i+2
                 while j < len(lines):
-                    raw = lines[j]
-                    txt = raw.strip()
-                    canon = _canonical(txt)
-                    if (not txt or
-                        txt.startswith("|") and txt.count("|")>=2 or
-                        re.fullmatch(r"=+", txt) or
-                        canon in STOP or
-                        SKIP_RE.match(canon) or
-                        _PAT_LINK.match(txt)):
+                    raw = lines[j].strip()
+                    low = raw.lower()
+                    if (not raw or
+                        raw.startswith("|") or raw.count("|")>=2 or
+                        re.fullmatch(r"=+", raw) or
+                        DATE_RE.match(raw) or
+                        PAT_LINK.match(raw) or
+                        any(low.startswith(tag) for tag in SKIP_TAGS)):
                         j += 1; continue
-                    desc = _strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
+                    desc = _strip_md_links(re.sub(r"\s+"," ",raw)).strip(" …")
                     break
                 if not desc:
                     desc = " "   # NBSP para conservar salto
