@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix5”
+Versión “medias24 v4-lite-fix6”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Salto de línea tras el primer “:” del título
-• Filtra tablas markdown y líneas-etiqueta genéricas
+• Salto de línea tras el primer ‘:’ del título
+• Filtra tablas markdown, líneas-etiqueta genéricas y
+  ahora también “Journée du …” o fechas sueltas
 • Sin vista previa de enlaces
 """
 
@@ -32,7 +33,7 @@ ALLOWED_DATES = {(TODAY - timedelta(days=i)).isoformat() for i in range(3)}
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix5)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix6)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -98,10 +99,13 @@ def _load_cache()->set[str]:
 def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=False,indent=2))
 
 # ──────── Medias24 parser ─────── #
-_PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
-_PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
-_PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
-_SKIP_TAGS  = {
+_PAT_HEADER   = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
+_PAT_LINK     = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
+_PAT_DATELINE = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
+_PAT_JOURNEE  = re.compile(r"^Journée du \d{1,2}-\d{1,2}-\d{4}$", re.I)
+_PAT_DATEONLY = re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")
+
+_SKIP_TAGS = {
     "marché de change", "la séance du jour", "la bourse",
 }
 
@@ -130,7 +134,9 @@ def _parse_medias24(md:str) -> List[dict]:
                     if (not txt or
                         txt.startswith("|") or txt.count("|")>=2 or
                         re.fullmatch(r"=+", txt) or
-                        _PAT_DATE.match(txt) or
+                        _PAT_DATELINE.match(txt) or
+                        _PAT_JOURNEE.match(txt) or
+                        _PAT_DATEONLY.match(txt) or
                         _PAT_LINK.match(txt) or
                         low in _SKIP_TAGS):
                         j += 1; continue
