@@ -24,7 +24,7 @@
     Novembre:   "11"
     Décembre:   "12"
 
-   # ───────────── L’Economiste – Économie ─────────────
+ # ───────────── L’Economiste – Économie ─────────────
 - name: leconomiste_economie
   list_url: "https://www.leconomiste.com/categorie/Economie"
   base_url: "https://www.leconomiste.com"
