@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Multi-fuente → Telegram (@MorrocanFinancialNews)
-Versión “v1.3”
+Versión “v1.4”
 ────────────────────────────────────────────────────────
 • Finances News, L’Economiste, EcoActu, Médias24
 • Normaliza URLs de imagen antes de sendPhoto
 • Escapa todos los caracteres especiales de Markdown V2
 • Caption ≤ 1 024 caracteres · Mensaje ≤ 4 096
-• Fecha hoy solo: envía artículos con pdate == today
+• Envía solo artículos de HOY (pdate == today)
 • Soporta años de 2 dígitos y month_map insensible a mayúsc/minúsc
 • Omite imágenes con pseudo-elementos (p.ej. "::before")
 • Formato fijo: título, línea en blanco, descripción, línea en blanco,
@@ -15,7 +15,7 @@ Versión “v1.3”
 """
 
 import hashlib, json, os, re, tempfile, time, requests, yaml, html
-from datetime       import date, datetime, timedelta, timezone
+from datetime       import date, datetime, timezone
 from pathlib        import Path
 from typing         import Dict, List
 from urllib.parse   import urljoin, urlsplit, urlunsplit, quote, quote_plus
@@ -40,7 +40,7 @@ TODAY      = date.today().isoformat()
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/v1.3)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/v1.4)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -166,11 +166,14 @@ def _parse_generic(src:Dict) -> List[Dict]:
 
         raw_date = ""
         if sel.get("date"):
-            dt = b.select_one(src["selectors"]["date"])
+            dt = b.select_one(sel["date"])
             raw_date = dt.get_text(strip=True) if dt else ""
         parsed = ""
         if (rx:=src.get("date_regex")) and raw_date and (m:=re.search(rx,raw_date)):
             d,mon,y = m.groups()
+            # normalizar año de 2 dígitos → "20YY"
+            if len(y) == 2:
+                y = "20" + y
             mon2 = src.get("month_map",{}).get(mon.lower().capitalize(), mon)
             parsed = f"{y}-{mon2}-{int(d):02d}"
 
@@ -178,8 +181,8 @@ def _parse_generic(src:Dict) -> List[Dict]:
     return out
 
 # ─── Medias24 via WP-JSON ─── #
-API_URL      = ("https://medias24.com/wp-json/wp/v2/posts?categories=14389&per_page=20&_embed")
-_PAT_SIGLAS  = re.compile(r"^[A-ZÉÈÎÂÀÇ][A-Z0-9ÉÈÎÂÀÇ\s]{2,20}\s+Pts$", re.ASCII)
+API_URL     = ("https://medias24.com/wp-json/wp/v2/posts?categories=14389&per_page=20&_embed")
+_PAT_SIGLAS = re.compile(r"^[A-ZÉÈÎÂÀÇ][A-Z0-9ÉÈÎÂÀÇ\s]{2,20}\s+Pts$", re.ASCII)
 
 def _clean_html(raw:str)->str:
     txt = re.sub(r"<[^>]+>","", raw)
@@ -196,11 +199,14 @@ def _parse_medias24_json() -> List[Dict]:
     for post in data:
         d = datetime.fromisoformat(post["date_gmt"].replace("Z","")).date()
         if d != TODAY_UTC: continue
+
         title = _clean_html(post["title"]["rendered"])
         link  = post["link"]
         desc  = _clean_html(post.get("excerpt",{}).get("rendered","") or "")
         low   = desc.lower()
-        if (_PAT_SIGLAS.match(desc) or low in {"marché de change","la séance du jour","la bourse", f"journée du {TODAY_UTC:%d-%m-%Y}".lower()}):
+        if (_PAT_SIGLAS.match(desc)
+            or low in {"marché de change","la séance du jour","la bourse",
+                       f"journée du {TODAY_UTC:%d-%m-%Y}".lower()}):
             desc = ""
         img = ""
         m = post.get("_embedded",{}).get("wp:featuredmedia",[])
