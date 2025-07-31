@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
 Medias24 LeBoursier → Telegram (@MorrocanFinancialNews)
-Versión “medias24 v4-lite-fix7”
+Versión “medias24 v4-lite-fix6”
 ────────────────────────────────────────────────────────
 • Envía artículos de los últimos 3 días (hoy,-1,-2)
 • Sin dependencias externas
-• Salto de línea tras el primer “:”
-• Filtra tablas markdown y etiquetas genéricas (robusto a espacios/NBSP)
-• Vista previa de enlaces desactivada
+• Salto de línea tras el primer “:” del título
+• Filtra:
+    · tablas markdown
+    · ‘líneas-etiqueta’ genéricas (Marché de change, La bourse…)
+    · encabezados markdown ### …                       (NUEVO)
+    · fechas sueltas dd-mm-yyyy o dd/mm/yyyy            (NUEVO)
+• Sin vista previa de enlaces
 """
 
-import hashlib, json, os, re, tempfile, time, requests
+import hashlib, json, os, re, tempfile, time, requests, sys
 from datetime   import datetime, timedelta
 from pathlib     import Path
 from typing      import List
@@ -32,7 +36,7 @@ ALLOWED_DATES = {(TODAY - timedelta(days=i)).isoformat() for i in range(3)}
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix7)",
+        "User-Agent": "Mozilla/5.0 (compatible; MoroccanFinanceBot/1.4-fix6)",
         "Accept-Language": "fr,en;q=0.8",
     })
     retry = Retry(total=4, backoff_factor=1,
@@ -101,18 +105,14 @@ def _save_cache(c:set): CACHE_FILE.write_text(json.dumps(list(c),ensure_ascii=Fa
 _PAT_HEADER = re.compile(r"^Le\s+(\d{1,2})/(\d{1,2})/(\d{4})\s+à\s+\d")
 _PAT_LINK   = re.compile(r"^\[(.+?)\]\((https?://[^\s)]+)\)")
 _PAT_DATE   = re.compile(r"^Le\s+\d+/\d+/\d+\s+à\s+\d")
-
-SKIP_TAGS = {
+_PAT_SOLO_DATE = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}$")
+_SKIP_TAGS  = {
     "marché de change", "la séance du jour", "la bourse",
-    "masi pts", "variations valeur par valeur", "journée du",  # palabras problemáticas
+    "masi pts", "journée du",   # parte fija + wildcard (*)
 }
 
 def _strip_md_links(text:str) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-
-def _normalize(txt:str) -> str:
-    # lower + colapsa espacios (incluye NBSP \u00A0) a uno solo
-    return re.sub(r"\s+", " ", txt.lower()).strip()
 
 def _parse_medias24(md:str) -> List[dict]:
     lines = md.splitlines()
@@ -131,17 +131,25 @@ def _parse_medias24(md:str) -> List[dict]:
                 desc = ""
                 j = i+2
                 while j < len(lines):
-                    raw = lines[j].strip()
-                    norm = _normalize(raw)
-                    if (not raw or
-                        raw.startswith("|") or raw.count("|")>=2 or
-                        re.fullmatch(r"=+", raw) or
-                        _PAT_DATE.match(raw) or
-                        _PAT_LINK.match(raw) or
-                        any(norm.startswith(tag) for tag in SKIP_TAGS)):
+                    raw = lines[j]
+                    txt = raw.strip()
+                    norm = txt.lower()
+
+                    if (
+                        not txt
+                        or txt.startswith("|") or txt.count("|")>=2
+                        or txt.startswith("#")                       # encabezado markdown
+                        or re.fullmatch(r"=+", txt)
+                        or _PAT_DATE.match(txt)
+                        or _PAT_LINK.match(txt)
+                        or _PAT_SOLO_DATE.match(txt)                # fecha suelta
+                        or any(norm.startswith(tag) for tag in _SKIP_TAGS)
+                    ):
                         j += 1; continue
-                    desc = _strip_md_links(re.sub(r"\s+"," ",raw)).strip(" …")
+
+                    desc = _strip_md_links(re.sub(r"\s+"," ",txt)).strip(" …")
                     break
+
                 if not desc:
                     desc = " "   # NBSP para conservar salto
 
@@ -158,7 +166,7 @@ def fetch_medias24() -> str:
     if cache.exists() and cache.stat().st_mtime > time.time() - 3600:
         return cache.read_text(encoding="utf-8")
 
-    print("[DEBUG] downloading via jina.ai")
+    print("[DEBUG] downloading via jina.ai", file=sys.stderr)
     url_jina = "https://r.jina.ai/http://" + url_html.removeprefix("http://").removeprefix("https://")
     md = _safe_get(url_jina, timeout=15).text
     cache.write_text(md, encoding="utf-8")
