@@ -22,7 +22,7 @@ def load_fetch_failures() -> int:
     try:
         with open(FETCH_FAILURES_FILE, "r", encoding="utf-8") as f:
             return int(json.load(f).get("count", 0))
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return 0
 
 
@@ -103,6 +103,7 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
         save_fetch_failures(failures)
         print(f"ERROR: Fetch attempt failed ({failures}): {e}")
         if failures >= FETCH_FAILURE_THRESHOLD:
+            send_alert(f"ALERT: {failures} consecutive fetch failures for BourseNews scraper. Last error: {e}")
             save_fetch_failures(0)
         raise
 
@@ -142,11 +143,13 @@ def parse_articles(html: str) -> list[dict]:
         if not (a_tag and img_tag and span_date):
             continue
 
+        date_text = span_date.get_text(strip=True)
+        for span in a_tag.find_all("span"):
+            span.decompose()
         headline = a_tag.get_text(strip=True)
         description = p_tag.get_text(strip=True) if p_tag else ""
         link_raw = a_tag.get("href", "")
         image_raw = img_tag.get("src", "")
-        date_text = span_date.get_text(strip=True)
 
         link = urljoin(BASE_URL, link_raw)
         image_url = urljoin(BASE_URL, image_raw)
@@ -171,6 +174,8 @@ def parse_articles(html: str) -> list[dict]:
 def send_telegram(message: str) -> None:
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise ValueError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables are required")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -186,17 +191,37 @@ def send_article(article: dict) -> None:
 
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise ValueError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables are required")
 
-    headline = article["headline"].replace("<", "&lt;").replace(">", "&gt;")
-    description = article["description"].strip().replace("<", "&lt;").replace(">", "&gt;")
+    headline = article["headline"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    description = article["description"].strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     link = article["link"]
 
+    # Telegram photo caption limit is 1024 characters
+    MAX_CAPTION_LENGTH = 1024
+
+    # Build caption without description first to calculate available space
+    parts_without_desc = [
+        f"<b>{headline}</b>",
+        "",
+        f'<a href="{link}">Lire l\'article complet</a>',
+        "",
+        "@MorrocanFinancialNews"
+    ]
+    base_caption = "\n".join(parts_without_desc)
+
+    # Calculate space for description (2 newlines before it)
+    available_for_desc = MAX_CAPTION_LENGTH - len(base_caption) - 2
+
     parts = [f"<b>{headline}</b>"]
-    if description:
+    if description and available_for_desc > 20:
+        if len(description) > available_for_desc:
+            description = description[:available_for_desc - 3] + "..."
         parts.extend(["", description])
     parts.extend([
         "",
-        f'<a href="{link}">Lire l’article complet</a>',
+        f'<a href="{link}">Lire l\'article complet</a>',
         "",
         "@MorrocanFinancialNews"
     ])
@@ -230,6 +255,9 @@ def send_article(article: dict) -> None:
 def send_alert(message: str) -> None:
     token = os.getenv("TELEGRAM_TOKEN")
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
+    if not token or not alert_chat:
+        print(f"WARNING: Cannot send alert (missing TELEGRAM_TOKEN or TELEGRAM_ALERT_CHAT_ID): {message}")
+        return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": alert_chat,
@@ -264,13 +292,13 @@ def main():
         print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
         try:
             send_article(article)
+            sent_urls.add(article["link"])
+            save_sent(sent_urls)
             print(f"DEBUG: Sent article {idx}/{len(todays)}")
             time.sleep(10)
         except Exception as e:
             print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
 
-    sent_urls.update(a["link"] for a in todays)
-    save_sent(sent_urls)
     print(f"DEBUG: saved {len(sent_urls)} URLs to sent_articles.json")
 
 
