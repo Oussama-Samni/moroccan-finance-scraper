@@ -8,30 +8,37 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:
 
+# Prevent concurrent runs to avoid state file conflicts
+concurrency:
+  group: scraper
+  cancel-in-progress: false
+
 jobs:
   scrape-and-notify:
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 python-telegram-bot
+        run: pip install -r requirements.txt
 
       - name: Run scraper and notify
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
         run: python scrape_and_notify.py
 
       - name: Show git status before commit
@@ -48,7 +55,27 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: update state for $(date -u +%F)"
-            git push
+            # Retry push up to 3 times with delay
+            for i in 1 2 3; do
+              git push && break || {
+                echo "Push attempt $i failed, retrying in 5s..."
+                sleep 5
+                git pull --rebase
+              }
+            done
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send failure alert
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ALERT_CHAT_ID: ${{ secrets.TELEGRAM_ALERT_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_ALERT_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_ALERT_CHAT_ID}" \
+              -d text="GitHub Actions: BourseNews scraper workflow failed. Check: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              -d parse_mode="HTML"
+          fi
