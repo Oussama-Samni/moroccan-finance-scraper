@@ -152,17 +152,21 @@ MONTH_MAP = {
 def parse_date(date_text: str) -> str:
     m = re.search(r"\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b", date_text)
     if not m:
+        print(f"DEBUG: Date regex failed for: {date_text!r}")
         return ""
     day, mon_name, year = m.groups()
-    mon_num = MONTH_MAP.get(mon_name, "")
+    # Case-insensitive month lookup
+    mon_num = MONTH_MAP.get(mon_name.capitalize(), "")
     if not mon_num:
+        print(f"DEBUG: Unknown month name: {mon_name!r} in date: {date_text!r}")
         return ""
     return f"{year}-{mon_num}-{int(day):02d}"
 
 
 def parse_articles(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    containers = soup.select("div.list_item.margin_top_30.margin_bottom_30 div.row")
+    # Simplified selector - avoid layout classes that may change
+    containers = soup.select("div.list_item div.row")
     articles = []
     for c in containers:
         a_tag = c.select_one("h3 a")
@@ -319,6 +323,12 @@ def main():
     articles = parse_articles(html)
 
     print(f"DEBUG: Parsed {len(articles)} total articles")
+
+    # Detect potential page structure change
+    if len(articles) == 0:
+        print("WARNING: Zero articles parsed - page structure may have changed")
+        send_alert("WARNING: BourseNews scraper parsed 0 articles. The website structure may have changed. Please check the CSS selectors.")
+
     today_str = date.today().isoformat()
     all_today = [a for a in articles if a["parsed_date"] == today_str]
 
