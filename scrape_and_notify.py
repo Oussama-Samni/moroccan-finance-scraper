@@ -27,9 +27,17 @@ def load_fetch_failures() -> int:
 
 
 def save_fetch_failures(count: int) -> None:
-    """Save updated fetch failure count."""
-    with open(FETCH_FAILURES_FILE, "w", encoding="utf-8") as f:
-        json.dump({"count": count}, f)
+    """Save updated fetch failure count atomically."""
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=".", suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump({"count": count}, f)
+        os.replace(tmp_path, FETCH_FAILURES_FILE)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 # ===== Sent URLs state =====
 
@@ -55,15 +63,23 @@ def load_sent() -> set:
 
 def save_sent(urls: set) -> None:
     """
-    Save today’s date and the list of sent URLs.
+    Save today's date and the list of sent URLs atomically.
     Always writes the new dict format.
     """
+    import tempfile
     payload = {
         "date": date.today().isoformat(),
         "urls": sorted(urls)
     }
-    with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=".", suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, SENT_FILE)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 # ===== HTTP fetching with retries =====
 
@@ -113,6 +129,19 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
 # ===== Parsing HTML and dates =====
 
 BASE_URL = "https://boursenews.ma"
+ALLOWED_IMAGE_DOMAINS = {"boursenews.ma", "www.boursenews.ma"}
+
+
+def is_safe_url(url: str) -> bool:
+    """Validate URL is from an allowed domain to prevent SSRF."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and parsed.netloc in ALLOWED_IMAGE_DOMAINS
+    except Exception:
+        return False
+
+
 MONTH_MAP = {
     "Janvier": "01", "Février": "02", "Mars": "03", "Avril": "04",
     "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08",
@@ -171,6 +200,21 @@ def parse_articles(html: str) -> list[dict]:
 
 # ===== Telegram sending =====
 
+def telegram_request(url: str, payload: dict, max_retries: int = 3) -> requests.Response:
+    """Make a Telegram API request with retry logic for 429 rate limits."""
+    for attempt in range(max_retries):
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 5))
+            print(f"DEBUG: Telegram rate limit hit, waiting {retry_after}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(retry_after)
+            continue
+        resp.raise_for_status()
+        return resp
+    resp.raise_for_status()
+    return resp
+
+
 def send_telegram(message: str) -> None:
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -180,10 +224,9 @@ def send_telegram(message: str) -> None:
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
-    r = requests.post(url, json=payload, timeout=10)
-    r.raise_for_status()
+    telegram_request(url, payload)
 
 
 def send_article(article: dict) -> None:
@@ -229,6 +272,8 @@ def send_article(article: dict) -> None:
 
     original_url = article["image_url"]
     try:
+        if not is_safe_url(original_url):
+            raise ValueError(f"URL not from allowed domain: {original_url}")
         head_resp = requests.head(original_url, timeout=5)
         content_type = head_resp.headers.get("Content-Type", "")
         if head_resp.status_code == 200 and content_type.startswith("image/"):
@@ -241,8 +286,7 @@ def send_article(article: dict) -> None:
                 "parse_mode": "HTML"
             }
             print(f"DEBUG: Sending photo to {chat_id}, photo={photo_url}")
-            resp = requests.post(api_url, json=payload, timeout=10)
-            resp.raise_for_status()
+            telegram_request(api_url, payload)
             print("DEBUG: sendPhoto OK")
             return
     except Exception as e:
@@ -264,8 +308,7 @@ def send_alert(message: str) -> None:
         "text": message,
         "parse_mode": "HTML"
     }
-    resp = requests.post(url, json=payload, timeout=10)
-    resp.raise_for_status()
+    telegram_request(url, payload)
 
 
 # ===== Main workflow =====
@@ -303,4 +346,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"FATAL: Unhandled exception in main(): {e}")
+        try:
+            send_alert(f"FATAL: BourseNews scraper crashed with unhandled exception: {e}")
+        except Exception:
+            pass
+        raise
