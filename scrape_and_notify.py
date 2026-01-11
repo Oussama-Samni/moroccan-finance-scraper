@@ -11,8 +11,10 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 # ===== State files =====
-SENT_FILE = "sent_articles.json"
-FETCH_FAILURES_FILE = "fetch_failures.json"
+# Use absolute paths relative to script location for deterministic behavior
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SENT_FILE = os.path.join(_SCRIPT_DIR, "sent_articles.json")
+FETCH_FAILURES_FILE = os.path.join(_SCRIPT_DIR, "fetch_failures.json")
 FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
 
 # ===== Fetch failure tracking =====
@@ -22,14 +24,14 @@ def load_fetch_failures() -> int:
     try:
         with open(FETCH_FAILURES_FILE, "r", encoding="utf-8") as f:
             return int(json.load(f).get("count", 0))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
         return 0
 
 
 def save_fetch_failures(count: int) -> None:
     """Save updated fetch failure count atomically."""
     import tempfile
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=".", suffix=".tmp")
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_SCRIPT_DIR, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump({"count": count}, f)
@@ -71,7 +73,7 @@ def save_sent(urls: set) -> None:
         "date": date.today().isoformat(),
         "urls": sorted(urls)
     }
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=".", suffix=".tmp")
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_SCRIPT_DIR, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -144,8 +146,8 @@ def is_safe_url(url: str) -> bool:
 
 MONTH_MAP = {
     "Janvier": "01", "Février": "02", "Mars": "03", "Avril": "04",
-    "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08",
-    "Septembre": "09", "Octobre": "10", "Novembre": "11", "Décembre": "12"
+    "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08", "Aout": "08",
+    "Septembre": "09", "Octobre": "10", "Novembre": "11", "Décembre": "12", "Decembre": "12"
 }
 
 
@@ -205,16 +207,26 @@ def parse_articles(html: str) -> list[dict]:
 # ===== Telegram sending =====
 
 def telegram_request(url: str, payload: dict, max_retries: int = 3) -> requests.Response:
-    """Make a Telegram API request with retry logic for 429 rate limits."""
+    """Make a Telegram API request with retry logic for 429 and 5xx errors."""
+    retry_codes = {429, 500, 502, 503, 504}
+    last_error = None
     for attempt in range(max_retries):
-        resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", 5))
-            print(f"DEBUG: Telegram rate limit hit, waiting {retry_after}s (attempt {attempt + 1}/{max_retries})")
-            time.sleep(retry_after)
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.status_code in retry_codes:
+                retry_after = int(resp.headers.get("Retry-After", 5))
+                print(f"DEBUG: Telegram error {resp.status_code}, waiting {retry_after}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            last_error = e
+            print(f"DEBUG: Telegram request failed: {e} (attempt {attempt + 1}/{max_retries})")
+            time.sleep(5)
             continue
-        resp.raise_for_status()
-        return resp
+    if last_error:
+        raise last_error
     resp.raise_for_status()
     return resp
 
@@ -243,7 +255,8 @@ def send_article(article: dict) -> None:
 
     headline = article["headline"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     description = article["description"].strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    link = article["link"]
+    # Escape URL for use in HTML href attribute
+    link = article["link"].replace("&", "&amp;").replace('"', "&quot;")
 
     # Telegram photo caption limit is 1024 characters
     MAX_CAPTION_LENGTH = 1024
@@ -278,7 +291,7 @@ def send_article(article: dict) -> None:
     try:
         if not is_safe_url(original_url):
             raise ValueError(f"URL not from allowed domain: {original_url}")
-        head_resp = requests.head(original_url, timeout=5)
+        head_resp = requests.head(original_url, timeout=5, allow_redirects=True)
         content_type = head_resp.headers.get("Content-Type", "")
         if head_resp.status_code == 200 and content_type.startswith("image/"):
             photo_url = urllib.parse.quote(original_url, safe=":/?&=#")
@@ -328,6 +341,9 @@ def main():
     if len(articles) == 0:
         print("WARNING: Zero articles parsed - page structure may have changed")
         send_alert("WARNING: BourseNews scraper parsed 0 articles. The website structure may have changed. Please check the CSS selectors.")
+    elif all(a["parsed_date"] == "" for a in articles):
+        print("WARNING: All articles have empty parsed_date - date parsing may be broken")
+        send_alert("WARNING: BourseNews scraper could not parse any dates. The date format may have changed.")
 
     today_str = date.today().isoformat()
     all_today = [a for a in articles if a["parsed_date"] == today_str]
