@@ -17,6 +17,9 @@ SENT_FILE = os.path.join(_SCRIPT_DIR, "sent_articles.json")
 FETCH_FAILURES_FILE = os.path.join(_SCRIPT_DIR, "fetch_failures.json")
 FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
 
+# Track if a fatal alert was already sent this run to avoid duplicates
+_fatal_alert_sent_this_run = False
+
 # ===== Fetch failure tracking =====
 
 def load_fetch_failures() -> int:
@@ -60,7 +63,11 @@ def load_sent() -> set:
 
     if data.get("date") != date.today().isoformat():
         return set()
-    return set(data.get("urls", []))
+    # Guard against corrupted urls field (must be a list)
+    urls = data.get("urls", [])
+    if not isinstance(urls, list):
+        return set()
+    return set(urls)
 
 
 def save_sent(urls: set) -> None:
@@ -112,6 +119,7 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
     Fetches the given URL with retry logic. Tracks consecutive failures
     and re-raises on failure after logging.
     """
+    global _fatal_alert_sent_this_run
     try:
         session = get_session()
         resp = session.get(url, timeout=timeout)
@@ -123,6 +131,7 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
         if failures >= FETCH_FAILURE_THRESHOLD:
             send_alert(f"ALERT: {failures} consecutive fetch failures for BourseNews scraper. Last error: {e}")
             save_fetch_failures(0)
+            _fatal_alert_sent_this_run = True
         raise
 
     save_fetch_failures(0)
@@ -152,7 +161,8 @@ MONTH_MAP = {
 
 
 def parse_date(date_text: str) -> str:
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-zéû]+)\s+(\d{4})\b", date_text)
+    # Use broad character class to match all French accented characters (À-ÿ)
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", date_text)
     if not m:
         print(f"DEBUG: Date regex failed for: {date_text!r}")
         return ""
@@ -175,7 +185,8 @@ def parse_articles(html: str) -> list[dict]:
         p_tag = c.select_one("p")
         img_tag = c.select_one("img")
         span_date = c.select_one("h3 a span")
-        if not (a_tag and img_tag and span_date):
+        # Only require headline link and date; image is optional (will fallback to text-only)
+        if not (a_tag and span_date):
             continue
 
         date_text = span_date.get_text(strip=True)
@@ -184,7 +195,16 @@ def parse_articles(html: str) -> list[dict]:
         headline = a_tag.get_text(strip=True)
         description = p_tag.get_text(strip=True) if p_tag else ""
         link_raw = a_tag.get("href", "")
-        image_raw = img_tag.get("src", "")
+        # Check lazy-loading attributes first, then fall back to src (image may be None)
+        image_raw = ""
+        if img_tag:
+            image_raw = (
+                img_tag.get("data-src") or
+                img_tag.get("data-lazy-src") or
+                img_tag.get("data-original") or
+                img_tag.get("src") or
+                ""
+            )
 
         link = urljoin(BASE_URL, link_raw)
         image_url = urljoin(BASE_URL, image_raw)
@@ -255,8 +275,8 @@ def send_article(article: dict) -> None:
 
     headline = article["headline"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     description = article["description"].strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    # Escape URL for use in HTML href attribute
-    link = article["link"].replace("&", "&amp;").replace('"', "&quot;")
+    # Escape URL for use in HTML href attribute (escape & first, then <, >, ")
+    link = article["link"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
     # Telegram photo caption limit is 1024 characters
     MAX_CAPTION_LENGTH = 1024
@@ -319,10 +339,12 @@ def send_alert(message: str) -> None:
     if not token or not alert_chat:
         print(f"WARNING: Cannot send alert (missing TELEGRAM_TOKEN or TELEGRAM_ALERT_CHAT_ID): {message}")
         return
+    # Escape HTML special characters in alert messages (exception strings may contain <, >, &)
+    escaped_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": alert_chat,
-        "text": message,
+        "text": escaped_message,
         "parse_mode": "HTML"
     }
     telegram_request(url, payload)
@@ -376,8 +398,11 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print(f"FATAL: Unhandled exception in main(): {e}")
-        try:
-            send_alert(f"FATAL: BourseNews scraper crashed with unhandled exception: {e}")
-        except Exception:
-            pass
+        # Only send fatal alert if one wasn't already sent
+        if not _fatal_alert_sent_this_run:
+            try:
+                send_alert(f"FATAL: BourseNews scraper crashed with unhandled exception: {e}")
+                _fatal_alert_sent_this_run = True
+            except Exception:
+                pass
         raise
