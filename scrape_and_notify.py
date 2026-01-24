@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Multi-source Moroccan Finance Scraper -> Telegram
-Scrapes multiple news sources and posts to @MorrocanFinancialNews
+Scrapes multiple news sources and posts to @MoroccanFinancialNews
 
 Features:
 - Multi-source support via sources.yml
@@ -482,7 +482,7 @@ def send_article(article: dict) -> None:
         "",
         f'<a href="{link}">Lire l\'article complet</a>',
         "",
-        "@MorrocanFinancialNews"
+        "@MoroccanFinancialNews"
     ]
     base_caption = "\n".join(parts_base)
     available_for_desc = MAX_CAPTION - len(base_caption) - 2
@@ -496,7 +496,7 @@ def send_article(article: dict) -> None:
         "",
         f'<a href="{link}">Lire l\'article complet</a>',
         "",
-        "@MorrocanFinancialNews"
+        "@MoroccanFinancialNews"
     ])
     caption = "\n".join(parts)
 
