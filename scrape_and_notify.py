@@ -1,26 +1,44 @@
-import os
-import time
-import re
-import requests
-import json
+#!/usr/bin/env python3
+"""
+Multi-source Moroccan Finance Scraper -> Telegram
+Scrapes multiple news sources and posts to @MorrocanFinancialNews
 
-from datetime import date
-from urllib.parse import urljoin
+Features:
+- Multi-source support via sources.yml
+- SSRF protection with per-source domain allowlists
+- Atomic file writes for state persistence
+- Fetch failure tracking with alerts
+- Telegram retry logic (429, 5xx)
+- HTML escaping for Telegram messages
+"""
+
+import html
+import json
+import os
+import re
+import tempfile
+import time
+from datetime import date, datetime, timezone
+from urllib.parse import urljoin, urlparse
+
+import requests
+import yaml
+from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from bs4 import BeautifulSoup
 
-# ===== State files =====
-# Use absolute paths relative to script location for deterministic behavior
+# ===== Configuration =====
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SOURCES_FILE = os.path.join(_SCRIPT_DIR, "sources.yml")
 SENT_FILE = os.path.join(_SCRIPT_DIR, "sent_articles.json")
 FETCH_FAILURES_FILE = os.path.join(_SCRIPT_DIR, "fetch_failures.json")
-FETCH_FAILURE_THRESHOLD = 3  # alert after 3 consecutive failures
+FETCH_FAILURE_THRESHOLD = 3
 
 # Track if a fatal alert was already sent this run to avoid duplicates
 _fatal_alert_sent_this_run = False
 
-# ===== Fetch failure tracking =====
+
+# ===== Fetch Failure Tracking =====
 
 def load_fetch_failures() -> int:
     """Load current consecutive fetch failure count."""
@@ -33,7 +51,6 @@ def load_fetch_failures() -> int:
 
 def save_fetch_failures(count: int) -> None:
     """Save updated fetch failure count atomically."""
-    import tempfile
     tmp_fd, tmp_path = tempfile.mkstemp(dir=_SCRIPT_DIR, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -44,13 +61,11 @@ def save_fetch_failures(count: int) -> None:
             os.remove(tmp_path)
         raise
 
-# ===== Sent URLs state =====
+
+# ===== Sent URLs State =====
 
 def load_sent() -> set:
-    """
-    Load the set of URLs already sent *today*.
-    Supports legacy list format or new dict format with date scoping.
-    """
+    """Load the set of URLs already sent today."""
     try:
         with open(SENT_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -58,12 +73,11 @@ def load_sent() -> set:
         return set()
 
     if isinstance(data, list):
-        # Legacy format
         return set(data)
 
     if data.get("date") != date.today().isoformat():
         return set()
-    # Guard against corrupted urls field (must be a list)
+
     urls = data.get("urls", [])
     if not isinstance(urls, list):
         return set()
@@ -71,11 +85,7 @@ def load_sent() -> set:
 
 
 def save_sent(urls: set) -> None:
-    """
-    Save today's date and the list of sent URLs atomically.
-    Always writes the new dict format.
-    """
-    import tempfile
+    """Save today's date and the list of sent URLs atomically."""
     payload = {
         "date": date.today().isoformat(),
         "urls": sorted(urls)
@@ -90,21 +100,26 @@ def save_sent(urls: set) -> None:
             os.remove(tmp_path)
         raise
 
-# ===== HTTP fetching with retries =====
+
+# ===== HTTP Session =====
 
 def get_session(
     total_retries: int = 5,
     backoff_factor: float = 1.0,
     status_forcelist: tuple = (429, 500, 502, 503, 504),
-    user_agent: str = "Mozilla/5.0 (compatible; FinanceScraper/1.0; +https://github.com/yourusername/moroccan-finance-scraper)"
 ) -> requests.Session:
+    """Create HTTP session with retry logic."""
     session = requests.Session()
-    session.headers.update({"User-Agent": user_agent})
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    })
     retry_strategy = Retry(
         total=total_retries,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
-        allowed_methods=frozenset(["GET", "POST"]),
+        allowed_methods=frozenset(["GET", "POST", "HEAD"]),
         raise_on_status=False,
         respect_retry_after_header=True,
     )
@@ -114,11 +129,8 @@ def get_session(
     return session
 
 
-def fetch_url(url: str, timeout: float = 10.0) -> str:
-    """
-    Fetches the given URL with retry logic. Tracks consecutive failures
-    and re-raises on failure after logging.
-    """
+def fetch_url(url: str, timeout: float = 15.0) -> str:
+    """Fetch URL with retry logic and failure tracking."""
     global _fatal_alert_sent_this_run
     try:
         session = get_session()
@@ -129,7 +141,7 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
         save_fetch_failures(failures)
         print(f"ERROR: Fetch attempt failed ({failures}): {e}")
         if failures >= FETCH_FAILURE_THRESHOLD:
-            send_alert(f"ALERT: {failures} consecutive fetch failures for BourseNews scraper. Last error: {e}")
+            send_alert(f"ALERT: {failures} consecutive fetch failures. Last error: {e}")
             save_fetch_failures(0)
             _fatal_alert_sent_this_run = True
         raise
@@ -137,162 +149,343 @@ def fetch_url(url: str, timeout: float = 10.0) -> str:
     save_fetch_failures(0)
     return resp.text
 
-# ===== Parsing HTML and dates =====
 
-BASE_URL = "https://boursenews.ma"
-ALLOWED_IMAGE_DOMAINS = {"boursenews.ma", "www.boursenews.ma"}
+def fetch_json(url: str, timeout: float = 15.0) -> dict:
+    """Fetch JSON from URL with retry logic."""
+    global _fatal_alert_sent_this_run
+    try:
+        session = get_session()
+        resp = session.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        failures = load_fetch_failures() + 1
+        save_fetch_failures(failures)
+        print(f"ERROR: JSON fetch failed ({failures}): {e}")
+        if failures >= FETCH_FAILURE_THRESHOLD:
+            send_alert(f"ALERT: {failures} consecutive fetch failures. Last error: {e}")
+            save_fetch_failures(0)
+            _fatal_alert_sent_this_run = True
+        raise
 
 
-def is_safe_url(url: str) -> bool:
+# ===== SSRF Protection =====
+
+def is_safe_url(url: str, allowed_domains: list) -> bool:
     """Validate URL is from an allowed domain to prevent SSRF."""
     try:
-        from urllib.parse import urlparse
         parsed = urlparse(url)
-        return parsed.scheme in ("http", "https") and parsed.netloc in ALLOWED_IMAGE_DOMAINS
+        if parsed.scheme not in ("http", "https"):
+            return False
+        # Check if domain matches any allowed domain
+        netloc = parsed.netloc.lower()
+        for domain in allowed_domains:
+            if netloc == domain or netloc.endswith("." + domain):
+                return True
+        return False
     except Exception:
         return False
 
 
-MONTH_MAP = {
-    "Janvier": "01", "Février": "02", "Mars": "03", "Avril": "04",
-    "Mai": "05", "Juin": "06", "Juillet": "07", "Août": "08", "Aout": "08",
-    "Septembre": "09", "Octobre": "10", "Novembre": "11", "Décembre": "12", "Decembre": "12"
-}
+# ===== Source Loading =====
+
+def load_sources() -> list:
+    """Load source configurations from YAML file."""
+    try:
+        with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or []
+    except Exception as e:
+        print(f"ERROR: Failed to load sources.yml: {e}")
+        return []
 
 
-def parse_date(date_text: str) -> str:
-    # Use broad character class to match all French accented characters (À-ÿ)
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", date_text)
+# ===== Date Parsing =====
+
+def parse_date_french(date_text: str, month_map: dict) -> str:
+    """Parse French date format: '24 Janvier 2026' -> '2026-01-24'"""
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-z\u00c0-\u00ff]+)\s+(\d{4})\b", date_text)
     if not m:
-        print(f"DEBUG: Date regex failed for: {date_text!r}")
         return ""
     day, mon_name, year = m.groups()
-    # Case-insensitive month lookup
-    mon_num = MONTH_MAP.get(mon_name.capitalize(), "")
+    mon_num = month_map.get(mon_name.capitalize(), "")
     if not mon_num:
-        print(f"DEBUG: Unknown month name: {mon_name!r} in date: {date_text!r}")
         return ""
     return f"{year}-{mon_num}-{int(day):02d}"
 
 
-def parse_articles(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    # Simplified selector - avoid layout classes that may change
-    containers = soup.select("div.list_item div.row")
+def parse_date_dmy_slash(date_text: str) -> str:
+    """Parse date format: 'dd/mm/yy' or 'dd/mm/yyyy' -> '2026-01-24'"""
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", date_text)
+    if not m:
+        return ""
+    day, month, year = m.groups()
+    if len(year) == 2:
+        year = "20" + year
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def parse_date(date_text: str, source: dict) -> str:
+    """Parse date based on source configuration."""
+    if not date_text:
+        return ""
+
+    date_format = source.get("date_format", "french")
+
+    if date_format == "dmy_slash":
+        return parse_date_dmy_slash(date_text)
+    else:
+        month_map = source.get("month_map", {})
+        return parse_date_french(date_text, month_map)
+
+
+# ===== HTML Parsing =====
+
+def extract_image_url(tag, image_attrs: list, base_url: str) -> str:
+    """Extract image URL checking multiple attributes for lazy-loading."""
+    if not tag:
+        return ""
+    for attr in image_attrs:
+        val = tag.get(attr)
+        if val:
+            # Handle background-image in style attribute
+            if attr == "style" and "background-image" in val:
+                m = re.search(r'url\(["\']?([^"\')\s]+)["\']?\)', val)
+                if m:
+                    return urljoin(base_url, m.group(1))
+            else:
+                return urljoin(base_url, val)
+    return ""
+
+
+def parse_html_source(source: dict) -> list:
+    """Parse articles from an HTML source using CSS selectors."""
+    try:
+        html_content = fetch_url(source["list_url"])
+    except Exception as e:
+        print(f"ERROR: Failed to fetch {source['name']}: {e}")
+        return []
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    sel = source.get("selectors", {})
+    base_url = source.get("base_url", "")
+    allowed_domains = source.get("allowed_domains", [])
+    image_attrs = source.get("image_attrs", ["src"])
+
     articles = []
-    for c in containers:
-        a_tag = c.select_one("h3 a")
-        p_tag = c.select_one("p")
-        img_tag = c.select_one("img")
-        span_date = c.select_one("h3 a span")
-        # Only require headline link and date; image is optional (will fallback to text-only)
-        if not (a_tag and span_date):
+    seen_links = set()
+
+    containers = soup.select(sel.get("container", ""))
+    for container in containers:
+        # Extract headline and link
+        headline_tag = container.select_one(sel.get("headline", ""))
+        if not headline_tag:
             continue
 
-        date_text = span_date.get_text(strip=True)
-        for span in a_tag.find_all("span"):
+        link_attr = sel.get("link_attr", "href")
+        link_raw = headline_tag.get(link_attr, "")
+        link = urljoin(base_url, link_raw)
+
+        if not link or link in seen_links:
+            continue
+        seen_links.add(link)
+
+        # Extract date first (for sources like BourseNews where date is in headline)
+        date_text = ""
+        date_sel = sel.get("date", "")
+        if date_sel:
+            date_tag = container.select_one(date_sel)
+            if date_tag:
+                date_text = date_tag.get_text(strip=True)
+
+        # Remove date spans from headline before extracting text
+        headline_clone = headline_tag
+        for span in headline_clone.find_all("span"):
             span.decompose()
-        headline = a_tag.get_text(strip=True)
-        description = p_tag.get_text(strip=True) if p_tag else ""
-        link_raw = a_tag.get("href", "")
-        # Check lazy-loading attributes first, then fall back to src (image may be None)
-        image_raw = ""
-        if img_tag:
-            image_raw = (
-                img_tag.get("data-src") or
-                img_tag.get("data-lazy-src") or
-                img_tag.get("data-original") or
-                img_tag.get("src") or
-                ""
-            )
+        headline = headline_clone.get_text(strip=True)
 
-        link = urljoin(BASE_URL, link_raw)
-        image_url = urljoin(BASE_URL, image_raw)
-        parsed = parse_date(date_text)
-
-        if not headline or not link.startswith("http"):
+        if not headline:
             continue
+
+        # Extract description
+        description = ""
+        desc_sel = sel.get("description", "")
+        if desc_sel:
+            desc_tag = container.select_one(desc_sel)
+            if desc_tag:
+                description = desc_tag.get_text(strip=True)
+
+        # Extract image URL with lazy-loading support
+        image_url = ""
+        img_sel = sel.get("image", "")
+        if img_sel:
+            # Support multiple selectors separated by comma
+            for img_selector in img_sel.split(","):
+                img_tag = container.select_one(img_selector.strip())
+                if img_tag:
+                    image_url = extract_image_url(img_tag, image_attrs, base_url)
+                    if image_url:
+                        break
+
+        # Validate image URL against allowed domains
+        if image_url and not is_safe_url(image_url, allowed_domains):
+            print(f"DEBUG: Rejected image URL (SSRF): {image_url}")
+            image_url = ""
+
+        # Parse date
+        parsed_date = parse_date(date_text, source)
 
         articles.append({
+            "source": source["name"],
             "headline": headline,
             "description": description,
             "link": link,
             "image_url": image_url,
-            "date": date_text,
-            "parsed_date": parsed,
+            "date_text": date_text,
+            "parsed_date": parsed_date,
         })
 
     return articles
 
-# ===== Telegram sending =====
+
+# ===== WP-JSON Parsing (Medias24) =====
+
+def clean_html_text(raw: str) -> str:
+    """Strip HTML tags and decode entities."""
+    text = re.sub(r"<[^>]+>", "", raw)
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def parse_wpjson_source(source: dict) -> list:
+    """Parse articles from a WordPress JSON API."""
+    try:
+        data = fetch_json(source["api_url"])
+    except Exception as e:
+        print(f"ERROR: Failed to fetch {source['name']}: {e}")
+        return []
+
+    allowed_domains = source.get("allowed_domains", [])
+    today_utc = datetime.now(timezone.utc).date()
+
+    articles = []
+    for post in data:
+        # Parse date from API
+        try:
+            post_date = datetime.fromisoformat(
+                post.get("date_gmt", "").replace("Z", "")
+            ).date()
+        except (ValueError, AttributeError):
+            continue
+
+        # Only include today's articles
+        if post_date != today_utc:
+            continue
+
+        title = clean_html_text(post.get("title", {}).get("rendered", ""))
+        link = post.get("link", "")
+        excerpt = clean_html_text(post.get("excerpt", {}).get("rendered", ""))
+
+        # Filter out generic/boilerplate descriptions
+        excerpt_lower = excerpt.lower()
+        boilerplate = [
+            "marché de change", "la séance du jour", "la bourse",
+            f"journée du {today_utc:%d-%m-%Y}".lower()
+        ]
+        if any(bp in excerpt_lower for bp in boilerplate):
+            excerpt = ""
+        # Filter stock ticker patterns
+        if re.match(r"^[A-Z\s]{2,20}\s+Pts$", excerpt):
+            excerpt = ""
+
+        # Extract featured image
+        image_url = ""
+        # Try WordPress featured media first
+        embedded = post.get("_embedded", {})
+        featured = embedded.get("wp:featuredmedia", [])
+        if featured and len(featured) > 0:
+            image_url = featured[0].get("source_url", "")
+        # Fallback: Try Yoast SEO og_image (used by L'Economiste)
+        if not image_url:
+            yoast = post.get("yoast_head_json", {})
+            og_images = yoast.get("og_image", [])
+            if og_images and len(og_images) > 0:
+                image_url = og_images[0].get("url", "")
+
+        # Validate image URL
+        if image_url and not is_safe_url(image_url, allowed_domains):
+            print(f"DEBUG: Rejected image URL (SSRF): {image_url}")
+            image_url = ""
+
+        articles.append({
+            "source": source["name"],
+            "headline": title,
+            "description": excerpt or "",
+            "link": link,
+            "image_url": image_url,
+            "date_text": str(post_date),
+            "parsed_date": str(post_date),
+        })
+
+    return articles
+
+
+# ===== Telegram Sending =====
 
 def telegram_request(url: str, payload: dict, max_retries: int = 3) -> requests.Response:
-    """Make a Telegram API request with retry logic for 429 and 5xx errors."""
+    """Make Telegram API request with retry logic."""
     retry_codes = {429, 500, 502, 503, 504}
     last_error = None
+
     for attempt in range(max_retries):
         try:
             resp = requests.post(url, json=payload, timeout=10)
             if resp.status_code in retry_codes:
                 retry_after = int(resp.headers.get("Retry-After", 5))
-                print(f"DEBUG: Telegram error {resp.status_code}, waiting {retry_after}s (attempt {attempt + 1}/{max_retries})")
+                print(f"DEBUG: Telegram {resp.status_code}, waiting {retry_after}s (attempt {attempt + 1})")
                 time.sleep(retry_after)
                 continue
             resp.raise_for_status()
             return resp
         except requests.RequestException as e:
             last_error = e
-            print(f"DEBUG: Telegram request failed: {e} (attempt {attempt + 1}/{max_retries})")
+            print(f"DEBUG: Telegram request failed: {e} (attempt {attempt + 1})")
             time.sleep(5)
             continue
+
     if last_error:
         raise last_error
     resp.raise_for_status()
     return resp
 
 
-def send_telegram(message: str) -> None:
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        raise ValueError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables are required")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    telegram_request(url, payload)
+def escape_html(text: str) -> str:
+    """Escape HTML special characters for Telegram."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def send_article(article: dict) -> None:
-    import urllib.parse
-
+    """Send article to Telegram channel."""
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        raise ValueError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables are required")
+        raise ValueError("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID are required")
 
-    headline = article["headline"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    description = article["description"].strip().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    # Escape URL for use in HTML href attribute (escape & first, then <, >, ")
+    headline = escape_html(article["headline"])
+    description = escape_html(article["description"].strip())
+    # Escape URL for HTML href attribute
     link = article["link"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-    # Telegram photo caption limit is 1024 characters
-    MAX_CAPTION_LENGTH = 1024
+    # Build caption with length limit (1024 for photos)
+    MAX_CAPTION = 1024
 
-    # Build caption without description first to calculate available space
-    parts_without_desc = [
+    parts_base = [
         f"<b>{headline}</b>",
         "",
         f'<a href="{link}">Lire l\'article complet</a>',
         "",
         "@MorrocanFinancialNews"
     ]
-    base_caption = "\n".join(parts_without_desc)
-
-    # Calculate space for description (2 newlines before it)
-    available_for_desc = MAX_CAPTION_LENGTH - len(base_caption) - 2
+    base_caption = "\n".join(parts_base)
+    available_for_desc = MAX_CAPTION - len(base_caption) - 2
 
     parts = [f"<b>{headline}</b>"]
     if description and available_for_desc > 20:
@@ -307,102 +500,125 @@ def send_article(article: dict) -> None:
     ])
     caption = "\n".join(parts)
 
-    original_url = article["image_url"]
-    try:
-        if not is_safe_url(original_url):
-            raise ValueError(f"URL not from allowed domain: {original_url}")
-        head_resp = requests.head(original_url, timeout=5, allow_redirects=True)
-        content_type = head_resp.headers.get("Content-Type", "")
-        if head_resp.status_code == 200 and content_type.startswith("image/"):
-            photo_url = urllib.parse.quote(original_url, safe=":/?&=#")
-            api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
-            payload = {
-                "chat_id": chat_id,
-                "photo": photo_url,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-            print(f"DEBUG: Sending photo to {chat_id}, photo={photo_url}")
-            telegram_request(api_url, payload)
-            print("DEBUG: sendPhoto OK")
-            return
-    except Exception as e:
-        print(f"DEBUG: Image HEAD check failed, falling back to text: {e}")
+    # Try sending with photo
+    image_url = article.get("image_url", "")
+    if image_url:
+        try:
+            head_resp = requests.head(image_url, timeout=5, allow_redirects=True)
+            content_type = head_resp.headers.get("Content-Type", "")
+            if head_resp.status_code == 200 and content_type.startswith("image/"):
+                api_url = f"https://api.telegram.org/bot{token}/sendPhoto"
+                payload = {
+                    "chat_id": chat_id,
+                    "photo": image_url,
+                    "caption": caption,
+                    "parse_mode": "HTML"
+                }
+                telegram_request(api_url, payload)
+                return
+        except Exception as e:
+            print(f"DEBUG: Image check failed, using text fallback: {e}")
 
-    print("DEBUG: Sending text-only fallback")
-    send_telegram(caption)
+    # Fallback to text message
+    api_url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": caption,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
+    telegram_request(api_url, payload)
 
 
 def send_alert(message: str) -> None:
+    """Send alert to admin channel."""
     token = os.getenv("TELEGRAM_TOKEN")
     alert_chat = os.getenv("TELEGRAM_ALERT_CHAT_ID")
     if not token or not alert_chat:
-        print(f"WARNING: Cannot send alert (missing TELEGRAM_TOKEN or TELEGRAM_ALERT_CHAT_ID): {message}")
+        print(f"WARNING: Cannot send alert (missing env vars): {message}")
         return
-    # Escape HTML special characters in alert messages (exception strings may contain <, >, &)
-    escaped_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    escaped = escape_html(message)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": alert_chat,
-        "text": escaped_message,
+        "text": escaped,
         "parse_mode": "HTML"
     }
-    telegram_request(url, payload)
+    try:
+        telegram_request(url, payload)
+    except Exception as e:
+        print(f"ERROR: Failed to send alert: {e}")
 
 
-# ===== Main workflow =====
+# ===== Main Workflow =====
 
 def main():
-    URL = "https://boursenews.ma/articles/marches"
-    html = fetch_url(URL)
-    articles = parse_articles(html)
-
-    print(f"DEBUG: Parsed {len(articles)} total articles")
-
-    # Detect potential page structure change
-    if len(articles) == 0:
-        print("WARNING: Zero articles parsed - page structure may have changed")
-        send_alert("WARNING: BourseNews scraper parsed 0 articles. The website structure may have changed. Please check the CSS selectors.")
-    elif all(a["parsed_date"] == "" for a in articles):
-        print("WARNING: All articles have empty parsed_date - date parsing may be broken")
-        send_alert("WARNING: BourseNews scraper could not parse any dates. The date format may have changed.")
-
-    today_str = date.today().isoformat()
-    all_today = [a for a in articles if a["parsed_date"] == today_str]
-
-    sent_urls = load_sent()
-    print(f"DEBUG: Loaded {len(sent_urls)} sent URLs from cache")
-    todays = [a for a in all_today if a["link"] not in sent_urls]
-
-    if not todays:
+    """Main scraping workflow."""
+    sources = load_sources()
+    if not sources:
+        print("ERROR: No sources configured")
+        send_alert("ERROR: No sources configured in sources.yml")
         return
 
-    print(f"DEBUG: Found {len(todays)} articles for {today_str}")
+    sent_urls = load_sent()
+    print(f"DEBUG: Loaded {len(sent_urls)} previously sent URLs")
 
-    for idx, article in enumerate(todays, 1):
-        print(f"DEBUG: Sending article {idx}/{len(todays)}: {article['headline']}")
-        try:
-            send_article(article)
-            sent_urls.add(article["link"])
-            save_sent(sent_urls)
-            print(f"DEBUG: Sent article {idx}/{len(todays)}")
-            time.sleep(10)
-        except Exception as e:
-            print(f"ERROR: Failed to send article {idx}/{len(todays)}: {e}")
+    today_str = date.today().isoformat()
+    total_sent = 0
 
-    print(f"DEBUG: saved {len(sent_urls)} URLs to sent_articles.json")
+    for source in sources:
+        name = source.get("name", "unknown")
+        source_type = source.get("type", "html")
+        print(f"\n=== Processing: {name} ({source_type}) ===")
+
+        # Parse articles based on source type
+        if source_type == "wp-json":
+            articles = parse_wpjson_source(source)
+        else:
+            articles = parse_html_source(source)
+
+        print(f"DEBUG: Parsed {len(articles)} articles from {name}")
+
+        # Alert on zero articles (possible site structure change)
+        if len(articles) == 0:
+            print(f"WARNING: Zero articles from {name}")
+            # Don't alert for every source, just log it
+
+        # Filter to today's articles not yet sent
+        new_articles = []
+        for a in articles:
+            if a["link"] in sent_urls:
+                continue
+            if a["parsed_date"] and a["parsed_date"] != today_str:
+                continue
+            new_articles.append(a)
+
+        print(f"DEBUG: {len(new_articles)} new articles to send from {name}")
+
+        # Send articles
+        for idx, article in enumerate(new_articles, 1):
+            print(f"  Sending {idx}/{len(new_articles)}: {article['headline'][:50]}...")
+            try:
+                send_article(article)
+                sent_urls.add(article["link"])
+                save_sent(sent_urls)
+                total_sent += 1
+                time.sleep(8)  # Rate limiting
+            except Exception as e:
+                print(f"  ERROR: Failed to send: {e}")
+
+    print(f"\n=== Summary: Sent {total_sent} articles across {len(sources)} sources ===")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"FATAL: Unhandled exception in main(): {e}")
-        # Only send fatal alert if one wasn't already sent
+        print(f"FATAL: Unhandled exception: {e}")
         if not _fatal_alert_sent_this_run:
             try:
-                send_alert(f"FATAL: BourseNews scraper crashed with unhandled exception: {e}")
-                _fatal_alert_sent_this_run = True
+                send_alert(f"FATAL: Scraper crashed: {e}")
             except Exception:
                 pass
         raise
